@@ -1,6 +1,7 @@
 # trains an RL model
 #
 import logging
+import os
 from typing import Any
 
 from negmas.sao import SAOResponse
@@ -12,10 +13,29 @@ from scml.oneshot.rl.common import model_wrapper
 from scml.oneshot.rl.env import OneShotEnv
 from scml.oneshot.rl.reward import DefaultRewardFunction
 
+from tqdm import tqdm
+from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.callbacks import BaseCallback
+from multiprocessing import Process, Queue
+
 # sys.path.append(str(Path(__file__).parent))
-from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, make_context
+from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, get_parallelization_params, make_context
 
 NTRAINING = 300000  # number of training steps
+
+
+class ProgressCallback(BaseCallback):
+    def __init__(self, queue: Queue, context_name: str):
+        super().__init__()
+        self.queue = queue
+        self.context_name = context_name
+
+    def _on_step(self) -> bool:
+        self.queue.put((self.context_name, self.training_env.num_envs))
+        return True
+
+    def _on_training_end(self):
+        self.queue.put((self.context_name, None))  # signal done
 
 
 class MyRewardFunction(DefaultRewardFunction):
@@ -87,19 +107,12 @@ def try_a_model(
     world.run_with_progress()
     return world
 
-
-def main(ntrain: int = NTRAINING):
-    # choose the type of the model. Possibilities supported are:
-    # fixed: Supports a single world configuration
-    # limited: Supports a limited range of world configuration
-    # unlimited: Supports any range of world configurations
-
-    
-
-    for context_name in CONTEXTS:
+def train_one(context_name, ntrain, params, queue):
         print(f"Training as {context_name}")
         # create a gymnasium environment for training
-        env = make_env(context_name)
+        env = env = SubprocVecEnv(
+            [lambda: make_env(context_name)] * params["n_envs"]
+        )
 
         # choose a training algorithm
         model = TrainingAlgorithm(  # type: ignore learning_rate must be passed by the algorithm itself
@@ -107,10 +120,12 @@ def main(ntrain: int = NTRAINING):
         )
 
         # train the model
-        model.learn(total_timesteps=ntrain, progress_bar=True)
-        print(
-            f"\tFinished training the model for {ntrain} steps ... Testing it on a single world simulation"
+        model.learn(
+            total_timesteps=ntrain,
+            progress_bar=False,
+            callback=ProgressCallback(queue, context_name),
         )
+        #print(f"\tFinished training the model for {ntrain} steps ... Testing it on a single world simulation")
 
         # decide the model path to save to
         model_path = (
@@ -120,13 +135,52 @@ def main(ntrain: int = NTRAINING):
 
         # save the model
         model.save(model_path)
-        # remove the in-memory model
-        del model
-        # load the model
-        model = TrainingAlgorithm.load(model_path)
+        #model = TrainingAlgorithm.load(model_path)
         # try the model in a single simulation
-        world = try_a_model(model, context_name)
-        print(world.scores())
+        #world = try_a_model(model, context_name)
+        #print(world.scores())
+
+
+def main(ntrain: int = NTRAINING):
+    # choose the type of the model. Possibilities supported are:
+    # fixed: Supports a single world configuration
+    # limited: Supports a limited range of world configuration
+    # unlimited: Supports any range of world configurations
+
+    total_cores = os.cpu_count() or 1
+    n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2))
+    params = get_parallelization_params(n_models_parallel=n_parallel)
+
+    queue = Queue()
+
+    for i in range(0, len(CONTEXTS), n_parallel):
+        batch = CONTEXTS[i : i + n_parallel]
+
+        # create one bar per context in this batch
+        bars = {
+            name: tqdm(total=ntrain, desc=name, position=j, leave=True)
+            for j, name in enumerate(batch)
+        }
+
+        processes = [
+            Process(target=train_one, args=(context_name, ntrain, params, queue))
+            for context_name in batch
+        ]
+        for p in processes:
+            p.start()
+
+        # main process handles all terminal output
+        finished = 0
+        while finished < len(batch):
+            context_name, steps = queue.get()
+            if steps is None:
+                bars[context_name].close()
+                finished += 1
+            else:
+                bars[context_name].update(steps)
+
+        for p in processes:
+            p.join()
 
 
 if __name__ == "__main__":
