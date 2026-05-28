@@ -13,9 +13,9 @@ from scml.oneshot.rl.env import OneShotEnv
 from scml.oneshot.rl.reward import DefaultRewardFunction
 
 # sys.path.append(str(Path(__file__).parent))
-from .common import MODEL_PATH, MyObservationManager, TrainingAlgorithm, make_context
+from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, make_context
 
-NTRAINING = 100  # number of training steps
+NTRAINING = 300000  # number of training steps
 
 
 class MyRewardFunction(DefaultRewardFunction):
@@ -28,7 +28,7 @@ class MyRewardFunction(DefaultRewardFunction):
         return super().__call__(awi, action, info)
 
 
-def make_env(as_supplier, log: bool = False) -> OneShotEnv:
+def make_env(context_name, log: bool = False) -> OneShotEnv:
     log_params: dict[str, Any] = (
         dict(
             no_logs=False,
@@ -53,7 +53,7 @@ def make_env(as_supplier, log: bool = False) -> OneShotEnv:
             ignore_simulation_exceptions=False,
         )
     )
-    context = make_context(as_supplier)
+    context = make_context(context_name)
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
         observation_manager=MyObservationManager(context=context),  # type: ignore
@@ -65,13 +65,13 @@ def make_env(as_supplier, log: bool = False) -> OneShotEnv:
 
 def try_a_model(
     model,
-    as_supplier: bool,
+    context_name: str,
 ):
     """Runs a single simulation with one agent controlled with the given model"""
 
     obs_type = MyObservationManager
     # Create a world context compatibly with the model
-    context = make_context(as_supplier)
+    context = make_context(context_name)
     # sample a world and the RL agents (always one in this case)
     world, _ = context.generate(
         types=(OneShotRLAgent,),
@@ -94,10 +94,12 @@ def main(ntrain: int = NTRAINING):
     # limited: Supports a limited range of world configuration
     # unlimited: Supports any range of world configurations
 
-    for as_supplier in (False, True):
-        print(f"Training as {'supplier' if as_supplier else 'consumer'}")
+    
+
+    for context_name in CONTEXTS:
+        print(f"Training as {context_name}")
         # create a gymnasium environment for training
-        env = make_env(as_supplier)
+        env = make_env(context_name)
 
         # choose a training algorithm
         model = TrainingAlgorithm(  # type: ignore learning_rate must be passed by the algorithm itself
@@ -113,7 +115,7 @@ def main(ntrain: int = NTRAINING):
         # decide the model path to save to
         model_path = (
             MODEL_PATH.parent
-            / f"{MODEL_PATH.name}{'_supplier' if as_supplier else '_consumer'}"
+            / f"{MODEL_PATH.name}{context_name}"
         )
 
         # save the model
@@ -123,7 +125,7 @@ def main(ntrain: int = NTRAINING):
         # load the model
         model = TrainingAlgorithm.load(model_path)
         # try the model in a single simulation
-        world = try_a_model(model, as_supplier)
+        world = try_a_model(model, context_name)
         print(world.scores())
 
 
