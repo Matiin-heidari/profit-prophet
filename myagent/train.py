@@ -12,6 +12,7 @@ from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
 from scml.oneshot.rl.env import OneShotEnv
 from scml.oneshot.rl.reward import DefaultRewardFunction
+from scml.oneshot.context import GeneralContext, StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext, StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext
 
 from tqdm import tqdm
 from stable_baselines3.common.vec_env import SubprocVecEnv
@@ -41,12 +42,33 @@ class ProgressCallback(BaseCallback):
 class MyRewardFunction(DefaultRewardFunction):
     """My reward function"""
 
+    def __init__(self, context: GeneralContext):
+        self.context = context
+
     def before_action(self, awi: OneShotAWI) -> float:
         return super().before_action(awi)
 
     def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: float):
+
+        if isinstance(self.context, StrongSupplierContext):
+            pass  
+        elif isinstance(self.context, BalancedSupplierContext):
+            pass
+        elif isinstance(self.context, WeakSupplierContext):
+            pass
+        elif isinstance(self.context, StrongConsumerContext):
+            pass
+        elif isinstance(self.context, BalancedConsumerContext):
+            pass
+        elif isinstance(self.context, WeakConsumerContext):
+            pass
+        
         return super().__call__(awi, action, info)
 
+        
+        
+        
+        
 
 def make_env(context_name, log: bool = False) -> OneShotEnv:
     log_params: dict[str, Any] = (
@@ -77,7 +99,7 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
         observation_manager=MyObservationManager(context=context),  # type: ignore
-        reward_function=MyRewardFunction(),
+        reward_function=MyRewardFunction(context=context),
         context=context,
         extra_checks=False,
     )
