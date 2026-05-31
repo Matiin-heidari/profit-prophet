@@ -36,7 +36,7 @@ class ProgressCallback(BaseCallback):
         return True
 
     def _on_training_end(self):
-        self.queue.put((self.context_name, None))  # signal done
+        pass
 
 
 class MyRewardFunction(DefaultRewardFunction):
@@ -143,37 +143,32 @@ def try_a_model(
     return world
 
 def train_one(context_name, ntrain, params, queue):
-        print(f"Training as {context_name}")
-        # create a gymnasium environment for training
-        env = env = SubprocVecEnv(
+    print(f"Training as {context_name}")
+    env = None
+
+    try:
+        env = SubprocVecEnv(
             [lambda: make_env(context_name)] * params["n_envs"]
         )
 
-        # choose a training algorithm
-        model = TrainingAlgorithm(  # type: ignore learning_rate must be passed by the algorithm itself
+        model = TrainingAlgorithm(
             "MlpPolicy", env, verbose=0
         )
 
-        # train the model
         model.learn(
             total_timesteps=ntrain,
             progress_bar=False,
             callback=ProgressCallback(queue, context_name),
         )
-        #print(f"\tFinished training the model for {ntrain} steps ... Testing it on a single world simulation")
 
-        # decide the model path to save to
-        model_path = (
-            MODEL_PATH.parent
-            / f"{MODEL_PATH.name}{context_name}"
-        )
-
-        # save the model
+        model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
         model.save(model_path)
-        #model = TrainingAlgorithm.load(model_path)
-        # try the model in a single simulation
-        #world = try_a_model(model, context_name)
-        #print(world.scores())
+
+    finally:
+        if env is not None:
+            env.close()
+
+        queue.put((context_name, None))
 
 
 def main(ntrain: int = NTRAINING):
