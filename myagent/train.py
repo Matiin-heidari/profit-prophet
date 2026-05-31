@@ -40,30 +40,43 @@ class ProgressCallback(BaseCallback):
 
 
 class MyRewardFunction(DefaultRewardFunction):
-    """My reward function"""
+    """Reward shaping on top of SCML's default reward."""
 
     def __init__(self, context: GeneralContext):
+        super().__init__()
         self.context = context
 
     def before_action(self, awi: OneShotAWI) -> float:
         return super().before_action(awi)
 
     def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: float):
+        base_reward = super().__call__(awi, action, info)
 
-        if isinstance(self.context, StrongSupplierContext):
-            pass  
-        elif isinstance(self.context, BalancedSupplierContext):
-            pass
-        elif isinstance(self.context, WeakSupplierContext):
-            pass
-        elif isinstance(self.context, StrongConsumerContext):
-            pass
-        elif isinstance(self.context, BalancedConsumerContext):
-            pass
-        elif isinstance(self.context, WeakConsumerContext):
-            pass
-        
-        return super().__call__(awi, action, info)
+        needed_sales = max(0, getattr(awi, "needed_sales", 0))
+        needed_supplies = max(0, getattr(awi, "needed_supplies", 0))
+        time_pressure = float(getattr(awi, "relative_time", 0.0))
+
+        if isinstance(self.context, (StrongSupplierContext, StrongConsumerContext)):
+            quantity_weight = 0.03
+        elif isinstance(self.context, (BalancedSupplierContext, BalancedConsumerContext)):
+            quantity_weight = 0.05
+        elif isinstance(self.context, (WeakSupplierContext, WeakConsumerContext)):
+            quantity_weight = 0.08
+        else:
+            quantity_weight = 0.05
+
+        shaping = 0.0
+
+        if isinstance(self.context, (StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext)):
+            shaping -= quantity_weight * needed_sales * (0.5 + time_pressure)
+
+        elif isinstance(self.context, (StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext)):
+            shaping -= quantity_weight * needed_supplies * (0.5 + time_pressure)
+
+        imbalance = abs(needed_sales - needed_supplies)
+        shaping -= 0.01 * imbalance
+
+        return base_reward + shaping
 
         
         
