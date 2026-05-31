@@ -40,43 +40,23 @@ class ProgressCallback(BaseCallback):
 
 
 class MyRewardFunction(DefaultRewardFunction):
-    """Reward shaping on top of SCML's default reward."""
+    """Reward shaping using score improvement."""
 
     def __init__(self, context: GeneralContext):
         super().__init__()
         self.context = context
 
     def before_action(self, awi: OneShotAWI) -> float:
-        return super().before_action(awi)
+        return float(getattr(awi, "current_score", 0.0))
 
     def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: float):
         base_reward = super().__call__(awi, action, info)
 
-        needed_sales = max(0, getattr(awi, "needed_sales", 0))
-        needed_supplies = max(0, getattr(awi, "needed_supplies", 0))
-        time_pressure = float(getattr(awi, "relative_time", 0.0))
+        previous_score = float(info or 0.0)
+        current_score = float(getattr(awi, "current_score", previous_score))
+        score_delta = current_score - previous_score
 
-        if isinstance(self.context, (StrongSupplierContext, StrongConsumerContext)):
-            quantity_weight = 0.03
-        elif isinstance(self.context, (BalancedSupplierContext, BalancedConsumerContext)):
-            quantity_weight = 0.05
-        elif isinstance(self.context, (WeakSupplierContext, WeakConsumerContext)):
-            quantity_weight = 0.08
-        else:
-            quantity_weight = 0.05
-
-        shaping = 0.0
-
-        if isinstance(self.context, (StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext)):
-            shaping -= quantity_weight * needed_sales * (0.5 + time_pressure)
-
-        elif isinstance(self.context, (StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext)):
-            shaping -= quantity_weight * needed_supplies * (0.5 + time_pressure)
-
-        imbalance = abs(needed_sales - needed_supplies)
-        shaping -= 0.01 * imbalance
-
-        return base_reward + shaping
+        return base_reward + 0.1 * score_delta
 
         
         
