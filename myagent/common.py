@@ -83,8 +83,16 @@ class MyObservationManager(FlexibleObservationManager):
             return super().encode(awi)
         except ValueError as e:
             if "min() arg is an empty sequence" in str(e):
-                return self.make_first_observation(awi)
+                space = self.make_space()
+
+                if isinstance(space, spaces.MultiDiscrete):
+                    return np.zeros_like(space.nvec, dtype=np.int64)
+
+                if isinstance(space, spaces.Box):
+                    return np.zeros(space.shape, dtype=space.dtype)
+
             raise
+    
 
     def make_first_observation(self, awi: OneShotAWI) -> np.ndarray:
         """Creates the initial observation (returned from gym's reset())"""
