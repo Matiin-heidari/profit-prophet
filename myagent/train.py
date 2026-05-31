@@ -15,7 +15,7 @@ from scml.oneshot.rl.reward import DefaultRewardFunction
 # sys.path.append(str(Path(__file__).parent))
 from .common import MODEL_PATH, MyObservationManager, TrainingAlgorithm, make_context
 
-NTRAINING = 100  # number of training steps
+NTRAINING = 100000  # number of training steps
 
 
 class MyRewardFunction(DefaultRewardFunction):
