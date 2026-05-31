@@ -44,28 +44,26 @@ def make_context(context_name: str) -> GeneralContext:
         case _: return GeneralContext()
     
 def get_parallelization_params(n_models_parallel: int = 1) -> dict:
-    """
-    Automatically determines safe parallelization values based on available CPU cores.
-    
-    Args:
-        n_models_parallel: how many models are being trained at the same time.
-                           1 = sequential training (default)
-                           6 = all models training simultaneously
-    """
-    total_cores = os.cpu_count() or 1
-    
-    # leave 2 cores free for OS + main training loop
-    usable_cores = max(1, total_cores - 2)
-    
-    # split usable cores across however many models run in parallel
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+
+    if slurm_cpus:
+        total_cores = int(slurm_cpus)
+        source = "SLURM_CPUS_PER_TASK"
+    else:
+        total_cores = os.cpu_count() or 1
+        source = "os.cpu_count()"
+
+    usable_cores = max(1, total_cores - 1)
     cores_per_model = max(1, usable_cores // n_models_parallel)
-    
-    # cap at 16 per model — beyond this, subprocess overhead outweighs gains
-    n_envs = min(cores_per_model, 16)
-    
-    print(f"Detected {total_cores} cores → using {n_envs} envs per model "
-          f"({n_models_parallel} model(s) training in parallel)")
-    
+
+    n_envs = min(cores_per_model, 4)
+
+    print(
+        f"Detected {total_cores} cores from {source} → "
+        f"using {n_envs} envs per model "
+        f"({n_models_parallel} model(s) training in parallel)"
+    )
+
     return {
         "n_envs": n_envs,
         "n_models_parallel": n_models_parallel,
