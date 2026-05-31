@@ -169,8 +169,13 @@ def main(ntrain: int = NTRAINING):
     # limited: Supports a limited range of world configuration
     # unlimited: Supports any range of world configurations
 
-    total_cores = os.cpu_count() or 1
-    n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2))
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+    
+    if slurm_cpus:
+        total_cores = int(slurm_cpus)
+    else:
+        total_cores = os.cpu_count() or 1
+    n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
     params = get_parallelization_params(n_models_parallel=n_parallel)
 
     queue = Queue()
