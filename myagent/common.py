@@ -79,7 +79,12 @@ class MyObservationManager(FlexibleObservationManager):
 
     def encode(self, awi: OneShotAWI) -> np.ndarray:
         """Encodes an observation from the agent's state"""
-        return super().encode(awi)
+        try:
+            return super().encode(awi)
+        except ValueError as e:
+            if "min() arg is an empty sequence" in str(e):
+                return self.make_first_observation(awi)
+            raise
 
     def make_first_observation(self, awi: OneShotAWI) -> np.ndarray:
         """Creates the initial observation (returned from gym's reset())"""
