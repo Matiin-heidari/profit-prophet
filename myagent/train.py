@@ -58,10 +58,6 @@ class MyRewardFunction(DefaultRewardFunction):
 
         return base_reward + 0.1 * score_delta
 
-        
-        
-        
-        
 
 def make_env(context_name, log: bool = False) -> OneShotEnv:
     log_params: dict[str, Any] = (
