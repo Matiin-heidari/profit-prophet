@@ -207,7 +207,66 @@ class BalancedSupplierRewardFunction(_BaseReward):
             return price_bonus + shortfall_penalty
         except Exception:
             return 0.0
+
+class StrongConsumerRewardFunction(_BaseReward):
+    """Reward for a *strong* consumer position. More producers than consumers. We aim for below-cataloge prices.
+     """
  
+    DELTA_WEIGHT = 0.05
+    PRICE_SCALE = 0.20
+ 
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
+        try:
+            catalog_in, _ = _catalog_prices(awi)
+            bonus = 0.0
+            for price in _buy_offer_prices(awi):
+                ratio = (catalog_in - price) / max(catalog_in, 1e-6)
+                bonus += float(np.clip(ratio, -0.10, 0.10)) * self.PRICE_SCALE
+            return bonus
+        except Exception:
+            return 0.0
+
+
+class WeakConsumerRewardFunction(_BaseReward):
+    """Reward shaping for a *weak* consumer position. Input supply is scarce. Failure to secure enough
+    inputs triggers shortfall penalties and prevents fulfilment of output contracts.
+    We heavily penalise a large ``needed_supplies`` value.
+    """
+
+    DELTA_WEIGHT = 0.20
+    SHORTFALL_SCALE = 0.20
+
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
+        try:
+            shortfall_ratio = _shortfall_buy_ratio(awi)
+            return -self.SHORTFALL_SCALE * shortfall_ratio
+        except Exception:
+            return 0.0
+
+class BalancedConsumerRewardFunction(_BaseReward):
+    """Reward for a *balanced* supplier position. Combines a moderate reward for below-catalog buys
+    with a moderate shortfall penalty.
+    """
+
+    DELTA_WEIGHT = 0.10
+    PRICE_SCALE = 0.10
+    SHORTFALL_SCALE = 0.10
+
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
+        try:
+            catalog_in, _ = _catalog_prices(awi)
+
+            prices = _buy_offer_prices(awi)
+            price_bonus = 0.0
+            if prices:
+                mean_ratio = (catalog_in - np.mean(prices)) / max(catalog_in, 1e-6)
+                price_bonus = float(np.clip(mean_ratio, -0.05, 0.05)) * self.PRICE_SCALE
+
+            shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_buy_ratio(awi)
+
+            return price_bonus + shortfall_penalty
+        except Exception:
+            return 0.0
 
 
 class ProgressCallback(BaseCallback):
