@@ -18,11 +18,12 @@ from tqdm import tqdm
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 from multiprocessing import Process, Queue
+import numpy as np
 
 # sys.path.append(str(Path(__file__).parent))
 from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, get_parallelization_params, make_context
 
-NTRAINING = 100000  # number of training steps
+NTRAINING = 100  # number of training steps
 
 
 class ProgressCallback(BaseCallback):
@@ -38,6 +39,24 @@ class ProgressCallback(BaseCallback):
     def _on_training_end(self):
         pass
 
+
+class EvaluationCallback(BaseCallback):
+    def __init__(self, context_name: str, eval_freq: int = 10_000, n_eval_episodes: int = 3):
+        super().__init__()
+        self.context_name = context_name
+        self.eval_freq = eval_freq
+        self.n_eval_episodes = n_eval_episodes
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps % self.eval_freq == 0:
+            scores = [evaluate_model(self.model, self.context_name) 
+                    for _ in range(self.n_eval_episodes)]
+            
+            self.logger.record("eval/mean_score", np.mean(scores))
+            self.logger.record("eval/std_score", np.std(scores))
+            self.logger.dump(self.num_timesteps)
+
+        return True
 
 class MyRewardFunction(DefaultRewardFunction):
     """Reward shaping using score improvement."""
@@ -94,6 +113,26 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
     )
 
 
+def evaluate_model(model, context_name: str) -> float:
+    context = make_context(context_name)
+    world, agents = context.generate(
+        types=(OneShotRLAgent,),
+        params=(
+            dict(
+                models=[model_wrapper(model)],
+                observation_managers=[MyObservationManager(context)],
+                action_managers=[FlexibleActionManager(context)],
+            ),
+        ),
+    )
+
+    world.run()
+    scores = world.scores()
+
+    rl_scores = [scores[a.name] for a in agents]
+    return float(np.mean(rl_scores) if rl_scores else 0.0)
+
+
 def try_a_model(
     model,
     context_name: str,
@@ -128,13 +167,15 @@ def train_one(context_name, ntrain, params, queue):
         )
 
         model = TrainingAlgorithm(  # type: ignore learning_rate must be passed by the algorithm itself
-            "MlpPolicy", env, verbose=0
+            "MlpPolicy", env, verbose=0, tensorboard_log=f"./tensorboard_logs/{context_name}"
         )
 
         model.learn(
             total_timesteps=ntrain,
             progress_bar=False,
-            callback=ProgressCallback(queue, context_name),
+            callback=[ProgressCallback(queue, context_name),
+                      EvaluationCallback(context_name, eval_freq=50, n_eval_episodes=1)
+                      ] 
         )
 
         model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
