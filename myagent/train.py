@@ -127,7 +127,7 @@ def train_one(context_name, ntrain, params, queue):
             [lambda: make_env(context_name)] * params["n_envs"]
         )
 
-        model = TrainingAlgorithm(
+        model = TrainingAlgorithm(  # type: ignore learning_rate must be passed by the algorithm itself
             "MlpPolicy", env, verbose=0
         )
 
