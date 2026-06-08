@@ -268,6 +268,23 @@ class BalancedConsumerRewardFunction(_BaseReward):
         except Exception:
             return 0.0
 
+_CONTEXT_TO_REWARD: dict[type, type[_BaseReward]] = {
+    StrongSupplierContext: StrongSupplierRewardFunction,
+    BalancedSupplierContext: BalancedSupplierRewardFunction,
+    WeakSupplierContext: WeakSupplierRewardFunction,
+    StrongConsumerContext: StrongConsumerRewardFunction,
+    BalancedConsumerContext: BalancedConsumerRewardFunction,
+    WeakConsumerContext: WeakConsumerRewardFunction,
+}
+
+def make_reward_function(context: GeneralContext) -> _BaseReward:
+    """Return the reward function best suited to *context*.
+
+    Falls back to :class:`_BaseReward` (score + delta only) for any context
+    type not in the registry.
+    """
+    reward_cls = _CONTEXT_TO_REWARD.get(type(context), _BaseReward)
+    return reward_cls(context)
 
 class ProgressCallback(BaseCallback):
     def __init__(self, queue: Queue, context_name: str):
@@ -301,6 +318,7 @@ class EvaluationCallback(BaseCallback):
 
         return True
 
+""""""
 class MyRewardFunction(DefaultRewardFunction):
     """Reward shaping using score improvement."""
 
@@ -313,14 +331,14 @@ class MyRewardFunction(DefaultRewardFunction):
 
     def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: float):
         base_reward = super().__call__(awi, action, info)
-        
+        """
         snapshot = dump_object(awi)
         if awi.current_offers != {}: print(f"Offers: {awi.current_offers}")
         print(f"Lines: {awi.n_lines}")
         print(f"Level:{awi.level} Total Sales:{awi.total_sales} ExInput: {awi.current_exogenous_input_quantity} Needed Sales: {awi.needed_sales}")
 
         with open("awi_dump.json", "w") as f:
-            json.dump(snapshot, f, indent=4, default=str)
+            json.dump(snapshot, f, indent=4, default=str)"""
 
         previous_score = float(info or 0.0)
         current_score = float(getattr(awi, "current_score", previous_score))
@@ -374,7 +392,7 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
         observation_manager=MyObservationManager(context=context),  # type: ignore
-        reward_function=MyRewardFunction(context=context),
+        reward_function=make_reward_function(context=context),
         context=context,
         extra_checks=False,
     )
@@ -470,11 +488,12 @@ def main(ntrain: int = NTRAINING):
     n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
     params = get_parallelization_params(n_models_parallel=n_parallel)
 
+    """
     params = {
         "n_envs": 1,
         "n_models_parallel": 1,
     }
-    n_parallel = 1
+    n_parallel = 1"""
 
     queue = Queue()
 
