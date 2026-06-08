@@ -23,7 +23,7 @@ import numpy as np
 # sys.path.append(str(Path(__file__).parent))
 from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, get_parallelization_params, make_context
 
-NTRAINING = 100  # number of training steps
+NTRAINING = 300000  # number of training steps
 
 
 class ProgressCallback(BaseCallback):
@@ -174,7 +174,7 @@ def train_one(context_name, ntrain, params, queue):
             total_timesteps=ntrain,
             progress_bar=False,
             callback=[ProgressCallback(queue, context_name),
-                      EvaluationCallback(context_name, eval_freq=50, n_eval_episodes=1)
+                      EvaluationCallback(context_name, eval_freq=int(NTRAINING/10), n_eval_episodes=3)
                       ] 
         )
 
