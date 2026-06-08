@@ -4,6 +4,8 @@ myagent/models/*.zip
 # Tensorboard Logs
 tensorboard_logs
 
+awi_dump.json
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
