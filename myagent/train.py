@@ -40,6 +40,13 @@ def _catalog_prices(awi: OneShotAWI) -> tuple[float, float]:
     except Exception:
         return 1.0, 1.0
     
+def _trading_prices(awi: OneShotAWI) -> tuple[float, float]:
+    try:
+        prices = awi.trading_prices
+        return float(prices[awi.my_input_product]), float(prices[awi.my_output_product])
+    except Exception:
+        return _catalog_prices(awi)
+    
 def _sell_offer_prices(awi: OneShotAWI) -> list[float]:
     """Unit prices from all non-None current sell offers."""
     try:
@@ -150,7 +157,7 @@ class StrongSupplierRewardFunction(_BaseReward):
  
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            _, catalog_out = _catalog_prices(awi)
+            _, catalog_out = _trading_prices(awi)
             bonus = 0.0
             # This rewards being in negotiations with above catalogue prices instead of having completed good deals
             for price in _sell_offer_prices(awi):
@@ -194,7 +201,7 @@ class BalancedSupplierRewardFunction(_BaseReward):
  
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            _, catalog_out = _catalog_prices(awi)
+            _, catalog_out = _trading_prices(awi)
  
             prices = _sell_offer_prices(awi)
             price_bonus = 0.0
@@ -217,7 +224,7 @@ class StrongConsumerRewardFunction(_BaseReward):
  
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            catalog_in, _ = _catalog_prices(awi)
+            catalog_in, _ = _trading_prices(awi)
             bonus = 0.0
             for price in _buy_offer_prices(awi):
                 ratio = (catalog_in - price) / max(catalog_in, 1e-6)
@@ -254,7 +261,7 @@ class BalancedConsumerRewardFunction(_BaseReward):
 
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            catalog_in, _ = _catalog_prices(awi)
+            catalog_in, _ = _trading_prices(awi)
 
             prices = _buy_offer_prices(awi)
             price_bonus = 0.0
