@@ -1,18 +1,18 @@
 #!/bin/bash
-#SBATCH --job-name=scml_test
+#SBATCH --job-name=train_scml
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
-#SBATCH --time=03:00:00
+#SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=96G
-#SBATCH --partition=kisski-h100
+#SBATCH --partition=kisski
 #SBATCH --gres=gpu:1
 
 module load miniforge3/24.3.0-0
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate $PROJECT_DIR/envs/agentic
 
-cd $PROJECT_DIR/repos/profit-prophet
+cd $PROJECT_DIR/profit-prophet-toby
 
 echo "=== Host ==="
 hostname
