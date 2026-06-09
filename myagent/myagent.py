@@ -34,7 +34,7 @@ class MyAgent(OneShotRLAgent):
         for context_name in CONTEXTS:
             self.paths.append(MODEL_PATH.parent / f"{base_name}{context_name}")
             context = make_context(context_name)
-            observation_managers.append(MyObservationManager(context))
+            observation_managers.append(MyObservationManager(context, continuous=True))
             action_managers.append(FlexibleActionManager(context))
 
 

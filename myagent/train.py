@@ -22,7 +22,7 @@ from multiprocessing import Process, Queue
 # sys.path.append(str(Path(__file__).parent))
 from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, get_parallelization_params, make_context
 
-NTRAINING = 100000  # number of training steps
+NTRAINING = 100  # number of training steps
 
 
 class ProgressCallback(BaseCallback):
@@ -87,8 +87,13 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
     context = make_context(context_name)
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
+<<<<<<< HEAD
         observation_manager=MyObservationManager(context=context),  # type: ignore
         reward_function=MyRewardFunction(context=context),
+=======
+        observation_manager=MyObservationManager(context=context, continuous=True),  # type: ignore
+        reward_function=MyRewardFunction(),
+>>>>>>> observation-manager-improvements
         context=context,
         extra_checks=False,
     )
@@ -109,7 +114,7 @@ def try_a_model(
         params=(
             dict(
                 models=[model_wrapper(model)],
-                observation_managers=[obs_type(context)],
+                observation_managers=[obs_type(context, continuous=True)],
                 action_managers=[FlexibleActionManager(context)],
             ),
         ),
