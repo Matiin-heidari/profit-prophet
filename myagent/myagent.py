@@ -12,6 +12,7 @@ from pathlib import Path
 from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.common import model_wrapper
+from scml.oneshot.rl.observation import FlexibleObservationManager
 
 from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, make_context
 
@@ -34,7 +35,7 @@ class MyAgent(OneShotRLAgent):
         for context_name in CONTEXTS:
             self.paths.append(MODEL_PATH.parent / f"{base_name}{context_name}")
             context = make_context(context_name)
-            observation_managers.append(MyObservationManager(context))
+            observation_managers.append(FlexibleObservationManager(context))
             action_managers.append(FlexibleActionManager(context))
 
 

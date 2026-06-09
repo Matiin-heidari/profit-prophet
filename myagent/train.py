@@ -13,6 +13,7 @@ from scml.oneshot.rl.common import model_wrapper
 from scml.oneshot.rl.env import OneShotEnv
 from scml.oneshot.rl.reward import DefaultRewardFunction
 from scml.oneshot.context import GeneralContext, StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext, StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext
+from scml.oneshot.rl.observation import FlexibleObservationManager
 
 from tqdm import tqdm
 from stable_baselines3.common.vec_env import SubprocVecEnv
@@ -21,7 +22,7 @@ from multiprocessing import Process, Queue
 import numpy as np
 
 # sys.path.append(str(Path(__file__).parent))
-from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, get_parallelization_params, make_context
+from .common import MODEL_PATH, CONTEXTS, TrainingAlgorithm, get_parallelization_params, make_context
 
 NTRAINING = 300000  # number of training steps
 
@@ -398,7 +399,7 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
     context = make_context(context_name)
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
-        observation_manager=MyObservationManager(context=context),  # type: ignore
+        observation_manager=FlexibleObservationManager(context=context), 
         reward_function=make_reward_function(context=context),
         context=context,
         extra_checks=False,
@@ -413,7 +414,7 @@ def evaluate_model(model, context_name: str) -> float:
         params=(
             dict(
                 models=[model_wrapper(model)],
-                observation_managers=[MyObservationManager(context)],
+                observation_managers=[FlexibleObservationManager(context)],
                 action_managers=[FlexibleActionManager(context)],
             ),
         ),
@@ -432,7 +433,7 @@ def try_a_model(
 ):
     """Runs a single simulation with one agent controlled with the given model"""
 
-    obs_type = MyObservationManager
+    obs_type = FlexibleObservationManager
     # Create a world context compatibly with the model
     context = make_context(context_name)
     # sample a world and the RL agents (always one in this case)
