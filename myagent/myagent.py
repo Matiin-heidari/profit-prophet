@@ -38,8 +38,8 @@ class MyAgent(OneShotRLAgent):
                 models=models,
                 # create corresponding observation managers
                 observation_managers=(
-                    MyObservationManager(context=contexts[0]),
-                    MyObservationManager(context=contexts[1]),
+                    MyObservationManager(context=contexts[0], continuous=True),
+                    MyObservationManager(context=contexts[1], continuous=True),
                 ),
                 action_managers=(
                     FlexibleActionManager(context=contexts[0]),

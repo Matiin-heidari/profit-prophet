@@ -15,7 +15,7 @@ from scml.oneshot.rl.reward import DefaultRewardFunction
 # sys.path.append(str(Path(__file__).parent))
 from .common import MODEL_PATH, MyObservationManager, TrainingAlgorithm, make_context
 
-NTRAINING = 100000  # number of training steps
+NTRAINING = 100  # number of training steps
 
 
 class MyRewardFunction(DefaultRewardFunction):
@@ -56,7 +56,7 @@ def make_env(as_supplier, log: bool = False) -> OneShotEnv:
     context = make_context(as_supplier)
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
-        observation_manager=MyObservationManager(context=context),  # type: ignore
+        observation_manager=MyObservationManager(context=context, continuous=True),  # type: ignore
         reward_function=MyRewardFunction(),
         context=context,
         extra_checks=False,
@@ -78,7 +78,7 @@ def try_a_model(
         params=(
             dict(
                 models=[model_wrapper(model)],
-                observation_managers=[obs_type(context)],
+                observation_managers=[obs_type(context, continuous=True)],
                 action_managers=[FlexibleActionManager(context)],
             ),
         ),
