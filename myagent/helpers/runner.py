@@ -1,3 +1,4 @@
+from pathlib import Path
 import time
 
 from negmas.helpers import humanize_time
@@ -9,6 +10,8 @@ from scml.utils import (
     DefaultAgentsOneShot2024,
 )
 from tabulate import tabulate
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 
 def run(
@@ -72,6 +75,27 @@ def run(
     # display results
     print(tabulate(results.total_scores, headers="keys", tablefmt="psql"))  # type: ignore
     print(f"Finished in {humanize_time(time.perf_counter() - start)}")
+    #show_score_per_level(results) # type: ignore
+        
+
+
+def show_score_per_level(results):
+    results.scores["level"] = results.scores.agent_name.str.split("@", expand=True).loc[
+            :, 1
+        ]
+    results.scores = results.scores.sort_values("level")
+    sns.lineplot(
+        data=results.scores[["agent_type", "level", "score"]],
+        x="level",
+        y="score",
+        hue="agent_type",
+        errorbar=None,
+    )
+    plt.plot([0.0] * len(results.scores["level"].unique()), "b--")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0)
+    plt.tight_layout()
+    Path("figures").mkdir(parents=True, exist_ok=True)
+    plt.savefig("figures/score_per_level.png", bbox_inches="tight")
 
 
 if __name__ == "__main__":

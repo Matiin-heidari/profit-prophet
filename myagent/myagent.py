@@ -56,4 +56,4 @@ class MyAgent(OneShotRLAgent):
 if __name__ == "__main__":
     from .helpers.runner import run
 
-    run([MyAgent])
+    run([MyAgent], n_steps=30, n_configs=10)

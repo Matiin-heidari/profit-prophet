@@ -1,10 +1,12 @@
 # Trained Models
 myagent/models/*.zip
+old_models
 
 # Tensorboard Logs
 tensorboard_logs
 
 awi_dump.json
+figures
 
 
 # Byte-compiled / optimized / DLL files

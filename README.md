@@ -4,5 +4,5 @@ ProfitProphets is a group project developing an autonomous agent for the **Suppl
 
 ## Requirements
 
-- Python **3.10**
+- Python **3.11**
 - Recommended: Linux environment (some dependencies may not have full Windows support)

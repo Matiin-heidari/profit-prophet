@@ -399,6 +399,7 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
 
 
 def evaluate_model(model, context_name: str) -> float:
+    """Runs a single simulation with one agent controlled with the given model. Similar to try_a_model but without progress output."""
     context = make_context(context_name)
     world, agents = context.generate(
         types=(OneShotRLAgent,),
@@ -449,7 +450,7 @@ def train_one(context_name, ntrain, params, queue):
     try:
         env = SubprocVecEnv(
             [lambda: make_env(context_name)] * params["n_envs"]
-        )
+        )      
 
         model = TrainingAlgorithm(  # type: ignore learning_rate must be passed by the algorithm itself
             "MlpPolicy", env, verbose=0, tensorboard_log=f"./tensorboard_logs/{context_name}"
@@ -472,6 +473,14 @@ def train_one(context_name, ntrain, params, queue):
 
         queue.put((context_name, None))
 
+def test_train(context_name):
+    env = make_env(context_name)
+    obs, _ = env.reset()
+    world = env._world
+    print(type(world))
+    for agent_id, agent in world.agents.items():
+        print(agent_id, type(agent).__name__)
+    
 
 def main(ntrain: int = NTRAINING):
     # choose the type of the model. Possibilities supported are:
@@ -479,6 +488,9 @@ def main(ntrain: int = NTRAINING):
     # limited: Supports a limited range of world configuration
     # unlimited: Supports any range of world configurations
 
+    #test_train("StrongSupplierContext")
+
+    
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
     
     if slurm_cpus:
@@ -487,13 +499,9 @@ def main(ntrain: int = NTRAINING):
         total_cores = os.cpu_count() or 1
     n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
     params = get_parallelization_params(n_models_parallel=n_parallel)
-
-    """
-    params = {
-        "n_envs": 1,
-        "n_models_parallel": 1,
-    }
-    n_parallel = 1"""
+    
+    #params = {"n_envs": 1,"n_models_parallel": 1,}
+    #n_parallel = 1
 
     queue = Queue()
 
@@ -524,7 +532,7 @@ def main(ntrain: int = NTRAINING):
                 bars[context_name].update(steps)
 
         for p in processes:
-            p.join()
+            p.join()     
 
 
 if __name__ == "__main__":
