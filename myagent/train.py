@@ -328,8 +328,12 @@ class EvaluationCallback(BaseCallback):
         self.eval_freq = eval_freq
         self.n_eval_episodes = n_eval_episodes
 
+    SCORE_KEYS = (
+        "score", "score_vs_mean_opponent", "score_rank"
+    )
+
     AGENT_KEYS = (
-        "score", "score_vs_mean_opponent", "score_rank", "bankrupt",
+        "bankrupt",
         "shortfall_penalty", "shortfall_quantity", "disposal_cost", "productivity",
         "neg_requests_received", "neg_requests_rejected", "neg_requests_sent",
         "negs_initiated", "negs_failed", "agent_agreement_rate",
@@ -345,6 +349,11 @@ class EvaluationCallback(BaseCallback):
         if self.num_timesteps % self.eval_freq == 0:
             results = [evaluate_model(self.model, self.context_name)
                        for _ in range(self.n_eval_episodes)]
+            
+            for key in self.SCORE_KEYS:
+                vals = [r[key] for r in results if r.get(key) is not None]
+                if vals:
+                    self.logger.record(f"_score/{key}", float(np.mean(vals)))
 
             for key in self.AGENT_KEYS:
                 vals = [r[key] for r in results if r.get(key) is not None]
