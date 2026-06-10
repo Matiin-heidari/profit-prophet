@@ -4,7 +4,7 @@ import logging
 import os, json
 from typing import Any
 
-from negmas.sao import SAOResponse
+from negmas.sao import SAOResponse, ResponseType
 from rich import print
 from scml.oneshot.awi import OneShotAWI
 from scml.oneshot.rl.action import FlexibleActionManager
@@ -24,7 +24,7 @@ import numpy as np
 # sys.path.append(str(Path(__file__).parent))
 from .common import MODEL_PATH, CONTEXTS, TrainingAlgorithm, get_parallelization_params, make_context
 
-NTRAINING = 300000  # number of training steps
+NTRAINING = 200000  # number of training steps
 
 
 _UNIT_PRICE_IDX = 2
@@ -48,45 +48,28 @@ def _trading_prices(awi: OneShotAWI) -> tuple[float, float]:
     except Exception:
         return _catalog_prices(awi)
     
-def _sell_offer_prices(awi: OneShotAWI) -> list[float]:
-    """Unit prices from all non-None current sell offers."""
+def _sell_agreement_prices(awi: OneShotAWI) -> list[tuple[float, int]]:
+    """(unit_price, quantity) pairs from sell negotiations that closed with an agreement this step."""
     try:
-        offers = awi.current_sell_offers or {}
         return [
-            float(o[_UNIT_PRICE_IDX])
-            for o in offers.values()
-            if o is not None
+            (float(state.agreement[_UNIT_PRICE_IDX]), int(state.agreement[0]))
+            for state in awi.current_sell_states.values()
+            if state.agreement is not None
         ]
     except Exception:
         return []
- 
- 
-def _buy_offer_prices(awi: OneShotAWI) -> list[float]:
-    """Unit prices from all non-None current buy offers."""
+
+
+def _buy_agreement_prices(awi: OneShotAWI) -> list[tuple[float, int]]:
+    """(unit_price, quantity) pairs from buy negotiations that closed with an agreement this step."""
     try:
-        offers = awi.current_buy_offers or {}
         return [
-            float(o[_UNIT_PRICE_IDX])
-            for o in offers.values()
-            if o is not None
+            (float(state.agreement[_UNIT_PRICE_IDX]), int(state.agreement[0]))
+            for state in awi.current_buy_states.values()
+            if state.agreement is not None
         ]
     except Exception:
         return []
- 
-def _needed_sales(awi: OneShotAWI) -> float:
-    """Quantity the agent still needs to sell this step (0 if fulfilled)."""
-    try:
-        return max(0.0, float(getattr(awi, "needed_sales", 0) or 0))
-    except Exception:
-        return 0.0
- 
- 
-def _needed_supplies(awi: OneShotAWI) -> float:
-    """Quantity the agent still needs to buy this step (0 if fulfilled)."""
-    try:
-        return max(0.0, float(getattr(awi, "needed_supplies", 0) or 0))
-    except Exception:
-        return 0.0
  
 def _shortfall_sell_ratio(awi: OneShotAWI) -> float:
     """Fraction of required sales not yet covered, in [0, 1]."""
@@ -110,16 +93,10 @@ def _shortfall_buy_ratio(awi: OneShotAWI) -> float:
 
 
 class _BaseReward(DefaultRewardFunction):
-    """Base reward functions inherited by all context specific reward functions.
+    """Base class for all context-specific reward functions.
 
-    ``before_action`` saves the current score
-     
-    ``__call__`` computes: reward = "BASE_WEIGHT * default_reward + DELTA_WEIGHT * score_delta + _extra(...)"
+    ``__call__`` delegates entirely to ``_extra``, which subclasses override.
     """
-
-   
-    BASE_WEIGHT: float = 1.0
-    DELTA_WEIGHT: float = 0.1  # Override in subclasses to tune urgency / patience. Low = Patient; High = Urgent
 
     def __init__(self, context: GeneralContext) -> None:
         super().__init__()
@@ -127,7 +104,7 @@ class _BaseReward(DefaultRewardFunction):
 
 
     def before_action(self, awi: OneShotAWI) -> float:  
-        return float(getattr(awi, "current_score", 0.0))
+        return 0
 
     def __call__(
         self,
@@ -135,12 +112,9 @@ class _BaseReward(DefaultRewardFunction):
         action: dict[str, SAOResponse],
         info: float,
     ) -> float:
-        base = super().__call__(awi, action, info)
-        prev_score = float(info or 0.0)
-        curr_score = float(getattr(awi, "current_score", prev_score))
-        delta = curr_score - prev_score
+
         extra = self._extra(awi, action)
-        return self.BASE_WEIGHT * base + self.DELTA_WEIGHT * delta + extra
+        return extra
 
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         """Context-specific shaping term.  Must not raise."""
@@ -153,17 +127,17 @@ class StrongSupplierRewardFunction(_BaseReward):
 
     """
  
-    DELTA_WEIGHT = 0.05
     PRICE_SCALE = 0.20    # max bonus/penalty magnitude per agreement
  
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            _, catalog_out = _trading_prices(awi)
+            _, catalog_out = _catalog_prices(awi)
+            deals = _sell_agreement_prices(awi)
+            total_qty = sum(q for _, q in deals)
             bonus = 0.0
-            # This rewards being in negotiations with above catalogue prices instead of having completed good deals
-            for price in _sell_offer_prices(awi):
+            for price, qty in deals:
                 ratio = (price - catalog_out) / max(catalog_out, 1e-6)
-                bonus += float(np.clip(ratio, -0.10, 0.10)) * self.PRICE_SCALE
+                bonus += float(np.clip(ratio, -0.10, 0.10)) * self.PRICE_SCALE * (qty / max(total_qty, 1))
             return bonus
         except Exception:
             return 0.0
@@ -173,16 +147,35 @@ class StrongSupplierRewardFunction(_BaseReward):
 
 class WeakSupplierRewardFunction(_BaseReward):
     """Reward for a *weak* supplier position. Demand for the product is low and
-    unsold products incure a penalty. So we prioritise getting any agreement at all instead of
-    good pricing. We penalise any unsold products.
+    unsold products incur a penalty. We penalise shortfall, reward each closed deal,
+    and reward engagement (not ending sell negotiations early).
     """
 
-    DELTA_WEIGHT = 0.20       
-    SHORTFALL_SCALE = 0.20 # scale of penalty for unsold products
+    SHORTFALL_SCALE = 0.20
+    DEAL_BONUS = 0.10
+    ENGAGEMENT_SCALE = 0.10
 
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            return -self.SHORTFALL_SCALE * _shortfall_sell_ratio(awi)
+            shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_sell_ratio(awi)
+
+            sell_partners = set(awi.current_sell_states.keys())
+            n_deals = sum(
+                1 for state in awi.current_sell_states.values()
+                if state.agreement is not None
+            )
+            deal_bonus = self.DEAL_BONUS * (n_deals / max(len(sell_partners), 1))
+            if sell_partners:
+                engaged = sum(
+                    1 for pid, r in action.items()
+                    if pid in sell_partners
+                    and r.response not in (ResponseType.END_NEGOTIATION, ResponseType.NO_RESPONSE, ResponseType.WAIT)
+                )
+                engagement_bonus = self.ENGAGEMENT_SCALE * (engaged / len(sell_partners))
+            else:
+                engagement_bonus = 0.0
+
+            return shortfall_penalty + deal_bonus + engagement_bonus
         except Exception:
             return 0.0
 
@@ -195,19 +188,19 @@ class BalancedSupplierRewardFunction(_BaseReward):
     Small price deviation bonus (half the StrongSupplier scale) plus a
     small flat per-agreement bonus to avoid zero-volume solutions."""
 
-
-    DELTA_WEIGHT = 0.10
     PRICE_SCALE = 0.10
     SHORTFALL_SCALE = 0.10
  
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            _, catalog_out = _trading_prices(awi)
+            _, catalog_out = _catalog_prices(awi)
  
-            prices = _sell_offer_prices(awi)
+            deals = _sell_agreement_prices(awi)
             price_bonus = 0.0
-            if prices:
-                mean_ratio = (np.mean(prices) - catalog_out) / max(catalog_out, 1e-6)
+            if deals:
+                total_qty = sum(q for _, q in deals)
+                mean_price = sum(p * q for p, q in deals) / max(total_qty, 1)
+                mean_ratio = (mean_price - catalog_out) / max(catalog_out, 1e-6)
                 price_bonus = float(np.clip(mean_ratio, -0.05, 0.05)) * self.PRICE_SCALE
  
             shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_sell_ratio(awi)
@@ -217,19 +210,20 @@ class BalancedSupplierRewardFunction(_BaseReward):
             return 0.0
 
 class StrongConsumerRewardFunction(_BaseReward):
-    """Reward for a *strong* consumer position. More producers than consumers. We aim for below-cataloge prices.
+    """Reward for a *strong* consumer position. More producers than consumers. We aim for below-catalog prices.
      """
- 
-    DELTA_WEIGHT = 0.05
+
     PRICE_SCALE = 0.20
  
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            catalog_in, _ = _trading_prices(awi)
+            catalog_in, _ = _catalog_prices(awi)
+            deals = _buy_agreement_prices(awi)
+            total_qty = sum(q for _, q in deals)
             bonus = 0.0
-            for price in _buy_offer_prices(awi):
+            for price, qty in deals:
                 ratio = (catalog_in - price) / max(catalog_in, 1e-6)
-                bonus += float(np.clip(ratio, -0.10, 0.10)) * self.PRICE_SCALE
+                bonus += float(np.clip(ratio, -0.10, 0.10)) * self.PRICE_SCALE * (qty / max(total_qty, 1))
             return bonus
         except Exception:
             return 0.0
@@ -238,16 +232,34 @@ class StrongConsumerRewardFunction(_BaseReward):
 class WeakConsumerRewardFunction(_BaseReward):
     """Reward shaping for a *weak* consumer position. Input supply is scarce. Failure to secure enough
     inputs triggers shortfall penalties and prevents fulfilment of output contracts.
-    We heavily penalise a large ``needed_supplies`` value.
+    We penalise shortfall, reward each closed deal, and reward engagement (not ending negotiations early).
     """
 
-    DELTA_WEIGHT = 0.20
     SHORTFALL_SCALE = 0.20
+    DEAL_BONUS = 0.10
+    ENGAGEMENT_SCALE = 0.10
 
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            shortfall_ratio = _shortfall_buy_ratio(awi)
-            return -self.SHORTFALL_SCALE * shortfall_ratio
+            shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_buy_ratio(awi)
+
+            buy_partners = set(awi.current_buy_states.keys())
+            n_deals = sum(
+                1 for state in awi.current_buy_states.values()
+                if state.agreement is not None
+            )
+            deal_bonus = self.DEAL_BONUS * (n_deals / max(len(buy_partners), 1))
+            if buy_partners:
+                engaged = sum(
+                    1 for pid, r in action.items()
+                    if pid in buy_partners
+                    and r.response not in (ResponseType.END_NEGOTIATION, ResponseType.NO_RESPONSE, ResponseType.WAIT)
+                )
+                engagement_bonus = self.ENGAGEMENT_SCALE * (engaged / len(buy_partners))
+            else:
+                engagement_bonus = 0.0
+
+            return shortfall_penalty + deal_bonus + engagement_bonus
         except Exception:
             return 0.0
 
@@ -256,18 +268,19 @@ class BalancedConsumerRewardFunction(_BaseReward):
     with a moderate shortfall penalty.
     """
 
-    DELTA_WEIGHT = 0.10
     PRICE_SCALE = 0.10
     SHORTFALL_SCALE = 0.10
 
     def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
         try:
-            catalog_in, _ = _trading_prices(awi)
+            catalog_in, _ = _catalog_prices(awi)
 
-            prices = _buy_offer_prices(awi)
+            deals = _buy_agreement_prices(awi)
             price_bonus = 0.0
-            if prices:
-                mean_ratio = (catalog_in - np.mean(prices)) / max(catalog_in, 1e-6)
+            if deals:
+                total_qty = sum(q for _, q in deals)
+                mean_price = sum(p * q for p, q in deals) / max(total_qty, 1)
+                mean_ratio = (catalog_in - mean_price) / max(catalog_in, 1e-6)
                 price_bonus = float(np.clip(mean_ratio, -0.05, 0.05)) * self.PRICE_SCALE
 
             shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_buy_ratio(awi)
@@ -347,7 +360,7 @@ class EvaluationCallback(BaseCallback):
 
         return True
 
-""""""
+
 class MyRewardFunction(DefaultRewardFunction):
     """Reward shaping using score improvement."""
 
@@ -441,7 +454,7 @@ def evaluate_model(model, context_name: str) -> dict:
         ),
     )
 
-    world.run_with_progress()
+    world.run()
 
     agent_id = agents[0].id
 
@@ -559,7 +572,7 @@ def train_one(context_name, ntrain, params, queue):
             total_timesteps=ntrain,
             progress_bar=False,
             callback=[ProgressCallback(queue, context_name),
-                      EvaluationCallback(context_name, eval_freq=int(NTRAINING/10), n_eval_episodes=40)
+                      EvaluationCallback(context_name, eval_freq=int(NTRAINING/10), n_eval_episodes=10)
                       ] 
         )
 
