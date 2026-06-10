@@ -22,7 +22,7 @@ from multiprocessing import Process, Queue
 # sys.path.append(str(Path(__file__).parent))
 from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, get_parallelization_params, make_context
 
-NTRAINING = 100  # number of training steps
+NTRAINING = 300000  # number of training steps
 
 
 class ProgressCallback(BaseCallback):

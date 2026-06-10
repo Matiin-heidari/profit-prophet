@@ -157,11 +157,6 @@ class MyObservationManager(FlexibleObservationManager):
             dtype=np.float32,
         )
 
-        print("base max =", base.max())
-        print("extras max =", extras.max())
-        print(self.continuous)
-        print(type(super().make_space()))
-
         obs = np.concatenate([base, extras])
         assert np.all(obs >= 0.0)
         assert np.all(obs <= 1.0)  
