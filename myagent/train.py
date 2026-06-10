@@ -309,19 +309,40 @@ class ProgressCallback(BaseCallback):
 
 
 class EvaluationCallback(BaseCallback):
-    def __init__(self, context_name: str, eval_freq: int = 10_000, n_eval_episodes: int = 3):
+    def __init__(self, context_name: str, eval_freq: int = 10_000, n_eval_episodes: int = 10):
         super().__init__()
         self.context_name = context_name
         self.eval_freq = eval_freq
         self.n_eval_episodes = n_eval_episodes
 
+    AGENT_KEYS = (
+        "score", "score_vs_mean_opponent", "score_rank", "bankrupt",
+        "shortfall_penalty", "shortfall_quantity", "disposal_cost", "productivity",
+        "neg_requests_received", "neg_requests_rejected", "neg_requests_sent",
+        "negs_initiated", "negs_failed", "agent_agreement_rate",
+    )
+    WORLD_KEYS = (
+        "welfare", "relative_welfare",
+        "n_negotiation_successful", "n_negotiation_failed",
+        "n_negotiation_rounds_successful", "n_negotiation_rounds_failed",
+        "n_contracts_nullified", "activity_level",
+    )
+
     def _on_step(self) -> bool:
         if self.num_timesteps % self.eval_freq == 0:
-            scores = [evaluate_model(self.model, self.context_name) 
-                    for _ in range(self.n_eval_episodes)]
-            
-            self.logger.record("eval/mean_score", np.mean(scores))
-            self.logger.record("eval/std_score", np.std(scores))
+            results = [evaluate_model(self.model, self.context_name)
+                       for _ in range(self.n_eval_episodes)]
+
+            for key in self.AGENT_KEYS:
+                vals = [r[key] for r in results if r.get(key) is not None]
+                if vals:
+                    self.logger.record(f"agent/{key}", float(np.mean(vals)))
+
+            for key in self.WORLD_KEYS:
+                vals = [r[key] for r in results if r.get(key) is not None]
+                if vals:
+                    self.logger.record(f"world/{key}", float(np.mean(vals)))
+
             self.logger.dump(self.num_timesteps)
 
         return True
@@ -406,7 +427,7 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
     )
 
 
-def evaluate_model(model, context_name: str) -> float:
+def evaluate_model(model, context_name: str) -> dict:
     """Runs a single simulation with one agent controlled with the given model. Similar to try_a_model but without progress output."""
     context = make_context(context_name)
     world, agents = context.generate(
@@ -420,11 +441,41 @@ def evaluate_model(model, context_name: str) -> float:
         ),
     )
 
-    world.run()
-    scores = world.scores()
+    world.run_with_progress()
 
-    rl_scores = [scores[a.name] for a in agents]
-    return float(np.mean(rl_scores) if rl_scores else 0.0)
+    agent_id = agents[0].id
+
+    result = {}
+
+    all_scores = world.scores()
+    opponent_scores = [v for k, v in all_scores.items() if k != agent_id]
+
+    result["score"] = all_scores[agent_id]
+    result["score_vs_mean_opponent"] = all_scores[agent_id] - float(np.mean(opponent_scores)) if opponent_scores else float("nan")
+    result["score_rank"] = sorted(all_scores.values(), reverse=True).index(all_scores[agent_id]) + 1
+    result["bankrupt"] = world.is_bankrupt[agent_id]
+    result["shortfall_penalty"] = sum(world.stats[f"shortfall_penalty_{agent_id}"])
+    result["shortfall_quantity"] = sum(world.stats[f"shortfall_quantity_{agent_id}"])
+    result["disposal_cost"] = sum(world.stats[f"disposal_cost_{agent_id}"])
+    result["productivity"] = float(np.mean(world.stats[f"productivity_{agent_id}"]))
+    result["n_negotiation_successful"] = sum(world.stats["n_negotiation_successful"])
+    result["n_negotiation_failed"] = sum(world.stats["n_negotiation_failed"])
+    result["n_negotiation_rounds_successful"] = sum(world.stats["n_negotiation_rounds_successful"])
+    result["n_negotiation_rounds_failed"] = sum(world.stats["n_negotiation_rounds_failed"])
+    result["n_contracts_nullified"] = sum(world.stats["n_contracts_nullified_now"])
+    result["activity_level"] = float(np.mean(world.stats["activity_level"]))
+    result["neg_requests_received"] = world.neg_requests_received[agent_id]
+    result["neg_requests_rejected"] = world.neg_requests_rejected[agent_id]
+    result["neg_requests_sent"] = world.neg_requests_sent[agent_id]
+    result["negs_initiated"] = world.negs_initiated[agent_id]
+    result["negs_failed"] = world.negs_failed[agent_id]
+    received = world.neg_requests_received[agent_id]
+    failed = world.negs_failed[agent_id]
+    result["agent_agreement_rate"] = (received - failed) / received if received > 0 else float("nan")
+    result["welfare"] = world.welfare()
+    result["relative_welfare"] = world.relative_welfare()
+
+    return result
 
 
 def try_a_model(
@@ -451,6 +502,46 @@ def try_a_model(
     world.run_with_progress()
     return world
 
+def try_a_trained_model(context_name: str):
+    """Runs a simulation with one agent controlled by the already trained model for the given context"""
+    path = MODEL_PATH.parent / f"{MODEL_PATH.name}{BalancedSupplierContext}"
+    model = TrainingAlgorithm.load(path)
+    obs_type = FlexibleObservationManager
+    # Create a world context compatibly with the model
+    context = make_context(context_name)
+    # sample a world and the RL agents (always one in this case)
+    world, agent = context.generate(
+        types=(OneShotRLAgent,),
+        params=(
+            dict(
+                models=[model_wrapper(model)],
+                observation_managers=[obs_type(context)],
+                action_managers=[FlexibleActionManager(context)],
+            ),
+        ),
+    )
+
+    print(f"Assigned Agent: {agent[0].name}, {agent[0].id}")
+    world_agents = world.agents
+    print(world_agents)
+    world.run_with_progress()
+    
+    scores = world.scores()
+    print(scores)
+    rl_score = world.scores()[agent[0].name]
+    print(f"Our Score: {rl_score}")
+    print(f"Agreement: {world.agreement_rate}")
+    print(f"Bankrupt: {world.is_bankrupt[agent[0].name]}")
+    print(f"neg_requests_received: {world.neg_requests_received[agent[0].name]}")
+    print(f"neg_requests_rejected: {world.neg_requests_rejected[agent[0].name]}")
+    print(f"neg_requests_sent: {world.neg_requests_sent[agent[0].name]}")
+    print(f"negs_initiated: {world.negs_initiated[agent[0].name]}")
+    print(f"negs_failed: {world.negs_failed[agent[0].name]}")
+
+
+    return world
+
+    
 def train_one(context_name, ntrain, params, queue):
     print(f"Training as {context_name}")
     env = None
@@ -468,7 +559,7 @@ def train_one(context_name, ntrain, params, queue):
             total_timesteps=ntrain,
             progress_bar=False,
             callback=[ProgressCallback(queue, context_name),
-                      EvaluationCallback(context_name, eval_freq=int(NTRAINING/10), n_eval_episodes=3)
+                      EvaluationCallback(context_name, eval_freq=int(NTRAINING/10), n_eval_episodes=40)
                       ] 
         )
 
@@ -545,5 +636,10 @@ def main(ntrain: int = NTRAINING):
 
 if __name__ == "__main__":
     import sys
+    #cont_str = "BalancedSupplierContext"
+    #try_a_trained_model(cont_str)
+    #path = MODEL_PATH.parent / f"{MODEL_PATH.name}{cont_str}"
+    #model = TrainingAlgorithm.load(path)
+    #print(evaluate_model(model, cont_str))
 
     main(int(sys.argv[1]) if len(sys.argv) > 1 else NTRAINING)
