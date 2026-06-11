@@ -127,8 +127,12 @@ def train_one(context_name, ntrain, params, queue):
             [lambda: make_env(context_name)] * params["n_envs"]
         )
 
+        policy_kwargs = dict(
+            net_arch=[128, 128]
+        )
+        
         model = TrainingAlgorithm(
-            "MlpPolicy", env, verbose=0
+            "MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs
         )
 
         model.learn(
@@ -159,7 +163,8 @@ def main(ntrain: int = NTRAINING):
         total_cores = int(slurm_cpus)
     else:
         total_cores = os.cpu_count() or 1
-    n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
+    #n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
+    n_parallel = 2
     params = get_parallelization_params(n_models_parallel=n_parallel)
 
     queue = Queue()
