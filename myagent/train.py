@@ -79,13 +79,36 @@ def _extract_score(scores: Any) -> float:
     return _safe_float(scores)
 
 
+def _safe_numeric_summary(value: Any, default: float = 0.0) -> float:
+    """Convert scalar/list/array values to a numeric mean."""
+    if value is None:
+        return default
+
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return _mean_numeric(list(value), default=default)
+
+    if hasattr(value, "tolist"):
+        return _mean_numeric(value.tolist(), default=default)
+
+    if hasattr(value, "to_list"):
+        return _mean_numeric(value.to_list(), default=default)
+
+    if hasattr(value, "values"):
+        try:
+            return _mean_numeric(list(value.values), default=default)
+        except Exception:
+            pass
+
+    return _safe_float(value, default=default)
+
+
 def _extract_world_stat(world: Any, key: str) -> float | None:
     """Read optional world statistics without breaking training."""
     for attr_name in ("stats", "statistics"):
         stats = getattr(world, attr_name, None)
 
         if isinstance(stats, dict) and key in stats:
-            return _safe_float(stats[key])
+            return _safe_numeric_summary(stats[key])
 
     return None
 
@@ -117,12 +140,22 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
         metrics["score"] = _extract_score(world.scores())
 
     for key in (
-        "welfare",
-        "relative_welfare",
         "n_negotiation_successful",
         "n_negotiation_failed",
+        "n_negotiation_rounds_successful",
+        "n_negotiation_rounds_failed",
+        "n_contracts_signed",
+        "n_contracts_concluded",
+        "n_contracts_executed",
+        "n_contracts_cancelled",
+        "n_contracts_dropped",
+        "n_contracts_nullified",
         "agreement_rate",
+        "agreement_fraction",
+        "contract_execution_fraction",
         "productivity",
+        "welfare",
+        "relative_welfare",
     ):
         value = _extract_world_stat(world, key)
         if value is not None:
