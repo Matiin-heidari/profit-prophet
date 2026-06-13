@@ -178,14 +178,24 @@ class EvaluationCallback(BaseCallback):
 
             for metric_name in metric_names:
                 values = [
-                    result[metric_name]
+                    float(result[metric_name])
                     for result in results
                     if metric_name in result
                 ]
+
+                if not values:
+                    continue
+
                 self.logger.record(
                     f"eval/{metric_name}",
-                    _mean_numeric(values),
+                    float(np.mean(values)),
                 )
+
+                if metric_name == "score":
+                    self.logger.record("eval/score_mean", float(np.mean(values)))
+                    self.logger.record("eval/score_std", float(np.std(values)))
+                    self.logger.record("eval/score_min", float(np.min(values)))
+                    self.logger.record("eval/score_max", float(np.max(values)))
 
             self.logger.record("eval/failed", 0)
 
