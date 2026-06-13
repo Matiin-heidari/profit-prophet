@@ -1,31 +1,139 @@
 # trains an RL model
-#
-import logging
 import os
+from multiprocessing import Process, Queue
 from typing import Any
 
+import numpy as np
 from negmas.sao import SAOResponse
 from rich import print
 from scml.oneshot.awi import OneShotAWI
+from scml.oneshot.context import GeneralContext
 from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
 from scml.oneshot.rl.env import OneShotEnv
 from scml.oneshot.rl.reward import DefaultRewardFunction
-from scml.oneshot.context import GeneralContext, StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext, StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext
-
-from tqdm import tqdm
-from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
-from multiprocessing import Process, Queue
+from stable_baselines3.common.vec_env import SubprocVecEnv
+from tqdm import tqdm
 
-# sys.path.append(str(Path(__file__).parent))
-from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, get_parallelization_params, make_context
+from .common import (
+    MODEL_PATH,
+    CONTEXTS,
+    MyObservationManager,
+    TrainingAlgorithm,
+    get_parallelization_params,
+    make_context,
+)
 
 NTRAINING = 300000  # number of training steps
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Convert values to float for logging."""
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _mean_numeric(values: list[Any], default: float = 0.0) -> float:
+    """Average numeric values only."""
+    numeric_values = []
+
+    for value in values:
+        try:
+            numeric_values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+
+    if not numeric_values:
+        return default
+
+    return float(np.mean(numeric_values))
+
+
+def _extract_score(scores: Any) -> float:
+    """Extract a usable score from SCML score outputs."""
+    if scores is None:
+        return 0.0
+
+    # Pandas DataFrame-like output.
+    if hasattr(scores, "columns") and "score" in scores.columns:
+        return _mean_numeric(list(scores["score"]))
+
+    # Pandas Series-like output.
+    if hasattr(scores, "to_dict"):
+        scores = scores.to_dict()
+
+    # Dict-like output.
+    if isinstance(scores, dict):
+        return _mean_numeric(list(scores.values()))
+
+    # List/tuple-like output.
+    if isinstance(scores, (list, tuple)):
+        return _mean_numeric(list(scores))
+
+    return _safe_float(scores)
+
+
+def _extract_world_stat(world: Any, key: str) -> float | None:
+    """Read optional world statistics without breaking training."""
+    for attr_name in ("stats", "statistics"):
+        stats = getattr(world, attr_name, None)
+
+        if isinstance(stats, dict) and key in stats:
+            return _safe_float(stats[key])
+
+    return None
+
+
+def evaluate_model(model, context_name: str) -> dict[str, float]:
+    """Run one small evaluation world and return loggable metrics."""
+    context = make_context(context_name)
+
+    world, _ = context.generate(
+        types=(OneShotRLAgent,),
+        params=(
+            dict(
+                models=[model_wrapper(model)],
+                observation_managers=[MyObservationManager(context, continuous=True)],
+                action_managers=[FlexibleActionManager(context)],
+            ),
+        ),
+    )
+
+    # Avoid progress output during training evaluation.
+    if hasattr(world, "run"):
+        world.run()
+    else:
+        world.run_with_progress()
+
+    metrics: dict[str, float] = {}
+
+    if hasattr(world, "scores"):
+        metrics["score"] = _extract_score(world.scores())
+
+    for key in (
+        "welfare",
+        "relative_welfare",
+        "n_negotiation_successful",
+        "n_negotiation_failed",
+        "agreement_rate",
+        "productivity",
+    ):
+        value = _extract_world_stat(world, key)
+        if value is not None:
+            metrics[key] = value
+
+    return metrics
+
+
 class ProgressCallback(BaseCallback):
+    """Send training progress to the main process."""
+
     def __init__(self, queue: Queue, context_name: str):
         super().__init__()
         self.queue = queue
@@ -37,6 +145,57 @@ class ProgressCallback(BaseCallback):
 
     def _on_training_end(self):
         pass
+
+
+class EvaluationCallback(BaseCallback):
+    """Log evaluation metrics to TensorBoard."""
+
+    def __init__(
+        self,
+        context_name: str,
+        eval_freq: int,
+        n_eval_episodes: int,
+    ):
+        super().__init__()
+        self.context_name = context_name
+        self.eval_freq = max(1, eval_freq)
+        self.n_eval_episodes = max(1, n_eval_episodes)
+        self.last_eval_step = 0
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps - self.last_eval_step < self.eval_freq:
+            return True
+
+        self.last_eval_step = self.num_timesteps
+
+        try:
+            results = [
+                evaluate_model(self.model, self.context_name)
+                for _ in range(self.n_eval_episodes)
+            ]
+
+            metric_names = sorted({key for result in results for key in result})
+
+            for metric_name in metric_names:
+                values = [
+                    result[metric_name]
+                    for result in results
+                    if metric_name in result
+                ]
+                self.logger.record(
+                    f"eval/{metric_name}",
+                    _mean_numeric(values),
+                )
+
+            self.logger.record("eval/failed", 0)
+
+        except Exception as e:
+            # Logging must never kill training.
+            self.logger.record("eval/failed", 1)
+            self.logger.record("eval/error", str(e))
+
+        self.logger.dump(self.num_timesteps)
+        return True
 
 
 class MyRewardFunction(DefaultRewardFunction):
@@ -59,32 +218,10 @@ class MyRewardFunction(DefaultRewardFunction):
         return base_reward + 0.1 * score_delta
 
 
-def make_env(context_name, log: bool = False) -> OneShotEnv:
-    log_params: dict[str, Any] = (
-        dict(
-            no_logs=False,
-            log_stats_every=1,
-            log_file_level=logging.DEBUG,
-            log_screen_level=logging.ERROR,
-            save_signed_contracts=True,
-            save_cancelled_contracts=True,
-            save_negotiations=True,
-            save_resolved_breaches=True,
-            save_unresolved_breaches=True,
-            debug=True,
-        )
-        if log
-        else dict(debug=True)
-    )
-    log_params.update(
-        dict(
-            ignore_agent_exceptions=False,
-            ignore_negotiation_exceptions=False,
-            ignore_contract_execution_exceptions=False,
-            ignore_simulation_exceptions=False,
-        )
-    )
+def make_env(context_name) -> OneShotEnv:
+    """Create a training environment for one context."""
     context = make_context(context_name)
+
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
         observation_manager=MyObservationManager(context=context, continuous=True),  # type: ignore
@@ -98,29 +235,45 @@ def try_a_model(
     model,
     context_name: str,
 ):
-    """Runs a single simulation with one agent controlled with the given model"""
-
-    obs_type = MyObservationManager
-    # Create a world context compatibly with the model
+    """Runs a single simulation with one agent controlled with the given model."""
     context = make_context(context_name)
-    # sample a world and the RL agents (always one in this case)
+
     world, _ = context.generate(
         types=(OneShotRLAgent,),
         params=(
             dict(
                 models=[model_wrapper(model)],
-                observation_managers=[obs_type(context, continuous=True)],
+                observation_managers=[MyObservationManager(context, continuous=True)],
                 action_managers=[FlexibleActionManager(context)],
             ),
         ),
     )
-    # run the world simulation
+
     world.run_with_progress()
     return world
 
+
 def train_one(context_name, ntrain, params, queue):
+    """Train one model for one context."""
     print(f"Training as {context_name}")
     env = None
+
+    run_name = os.environ.get("RUN_NAME", "default")
+    eval_freq = int(os.environ.get("EVAL_FREQ", str(max(ntrain // 5, 1))))
+    n_eval_episodes = int(os.environ.get("N_EVAL_EPISODES", "3"))
+
+    callbacks: list[BaseCallback] = [
+        ProgressCallback(queue, context_name),
+    ]
+
+    if eval_freq > 0 and n_eval_episodes > 0:
+        callbacks.append(
+            EvaluationCallback(
+                context_name=context_name,
+                eval_freq=eval_freq,
+                n_eval_episodes=n_eval_episodes,
+            )
+        )
 
     try:
         env = SubprocVecEnv(
@@ -128,13 +281,17 @@ def train_one(context_name, ntrain, params, queue):
         )
 
         model = TrainingAlgorithm(
-            "MlpPolicy", env, verbose=0
+            "MlpPolicy",
+            env,
+            verbose=0,
+            tensorboard_log=f"./tensorboard_logs/{run_name}/{context_name}",
         )
 
         model.learn(
             total_timesteps=ntrain,
             progress_bar=False,
-            callback=ProgressCallback(queue, context_name),
+            callback=callbacks,
+            tb_log_name=context_name,
         )
 
         model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
@@ -148,26 +305,29 @@ def train_one(context_name, ntrain, params, queue):
 
 
 def main(ntrain: int = NTRAINING):
-    # choose the type of the model. Possibilities supported are:
-    # fixed: Supports a single world configuration
-    # limited: Supports a limited range of world configuration
-    # unlimited: Supports any range of world configurations
-
+    """Train models for all selected contexts."""
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
-    
+
     if slurm_cpus:
         total_cores = int(slurm_cpus)
     else:
         total_cores = os.cpu_count() or 1
+
     n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
     params = get_parallelization_params(n_models_parallel=n_parallel)
+
+    print("=== Training config ===")
+    print(f"ntrain: {ntrain}")
+    print(f"contexts: {CONTEXTS}")
+    print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
+    print(f"eval_freq: {os.environ.get('EVAL_FREQ', f'{max(ntrain // 5, 1)}')}")
+    print(f"n_eval_episodes: {os.environ.get('N_EVAL_EPISODES', '3')}")
 
     queue = Queue()
 
     for i in range(0, len(CONTEXTS), n_parallel):
         batch = CONTEXTS[i : i + n_parallel]
 
-        # create one bar per context in this batch
         bars = {
             name: tqdm(total=ntrain, desc=name, position=j, leave=True)
             for j, name in enumerate(batch)
@@ -177,13 +337,14 @@ def main(ntrain: int = NTRAINING):
             Process(target=train_one, args=(context_name, ntrain, params, queue))
             for context_name in batch
         ]
+
         for p in processes:
             p.start()
 
-        # main process handles all terminal output
         finished = 0
         while finished < len(batch):
             context_name, steps = queue.get()
+
             if steps is None:
                 bars[context_name].close()
                 finished += 1

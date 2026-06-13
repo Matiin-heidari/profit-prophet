@@ -7,43 +7,63 @@ from gymnasium import spaces
 from negmas.outcomes import Outcome
 from scml.oneshot.rl.observation import FlexibleObservationManager
 from scml.oneshot.awi import OneShotAWI
-from scml.oneshot.context import GeneralContext, StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext, StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext
+from scml.oneshot.context import (
+    GeneralContext,
+    StrongSupplierContext,
+    BalancedSupplierContext,
+    WeakSupplierContext,
+    StrongConsumerContext,
+    BalancedConsumerContext,
+    WeakConsumerContext,
+)
 from stable_baselines3 import A2C
 from stable_baselines3.common.base_class import BaseAlgorithm
 
 TrainingAlgorithm: type[BaseAlgorithm] = A2C
-"""The algorithm used for training. You can use any stable_baselines3 algorithm or develop your own"""
+"""The algorithm used for training."""
 
 MODEL_PATH = Path(__file__).parent / "models" / "mymodel"
-"""The path in which train.py saves the trained model and from which myagent.py loads it"""
+"""The path in which train.py saves the trained model and from which myagent.py loads it."""
+
+ALL_CONTEXTS = [
+    "StrongSupplierContext",
+    "BalancedSupplierContext",
+    "WeakSupplierContext",
+    "StrongConsumerContext",
+    "BalancedConsumerContext",
+    "WeakConsumerContext",
+]
+"""All contexts supported by the agent."""
 
 CONTEXTS = [
-        "StrongSupplierContext",
-        "BalancedSupplierContext",
-        "WeakSupplierContext",
-        "StrongConsumerContext",
-        "BalancedConsumerContext",
-        "WeakConsumerContext"
-    ]
-"""
-The possible contexts for which we train the models.
-For example StrongSupplierContext is a context in which the amount of consumers
-is high in comparison to the number of competitors.
-"""
+    context.strip()
+    for context in os.environ.get("TRAIN_CONTEXTS", ",".join(ALL_CONTEXTS)).split(",")
+    if context.strip()
+]
+"""Contexts used for training. Can be overridden with TRAIN_CONTEXTS."""
 
 
 def make_context(context_name: str) -> GeneralContext:
-    """Generates a context based on the given string"""
+    """Create a context from its name."""
     match context_name:
-        case "StrongSupplierContext": return StrongSupplierContext()
-        case "BalancedSupplierContext": return BalancedSupplierContext()
-        case "WeakSupplierContext": return WeakSupplierContext()
-        case "StrongConsumerContext": return StrongConsumerContext()
-        case "BalancedConsumerContext": return BalancedConsumerContext()
-        case "WeakConsumerContext": return WeakConsumerContext()
-        case _: return GeneralContext()
-    
+        case "StrongSupplierContext":
+            return StrongSupplierContext()
+        case "BalancedSupplierContext":
+            return BalancedSupplierContext()
+        case "WeakSupplierContext":
+            return WeakSupplierContext()
+        case "StrongConsumerContext":
+            return StrongConsumerContext()
+        case "BalancedConsumerContext":
+            return BalancedConsumerContext()
+        case "WeakConsumerContext":
+            return WeakConsumerContext()
+        case _:
+            return GeneralContext()
+
+
 def get_parallelization_params(n_models_parallel: int = 1) -> dict:
+    """Choose parallel env count based on local or Slurm CPU allocation."""
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
 
     if slurm_cpus:
@@ -71,9 +91,10 @@ def get_parallelization_params(n_models_parallel: int = 1) -> dict:
 
 
 class MyObservationManager(FlexibleObservationManager):
-    """This is my observation manager implementing encoding and decoding the state used by the RL algorithm"""
+    """Observation manager with additional SCML-specific features."""
+
     def make_space(self) -> spaces.MultiDiscrete | spaces.Box:
-        """Creates the observation space"""
+        """Create the observation space."""
         base = super().make_space()
         n_extra = 6
 
@@ -84,9 +105,21 @@ class MyObservationManager(FlexibleObservationManager):
             dtype=np.float32,
         )
 
+    def encode(self, awi: OneShotAWI) -> np.ndarray:
+        """Encode the agent state."""
+        try:
+            base = super().encode(awi)
+        except ValueError as e:
+            if "min() arg is an empty sequence" in str(e):
+                space = self.make_space()
 
-    def encode(self, awi):
-        base = super().encode(awi)
+                if isinstance(space, spaces.MultiDiscrete):
+                    return np.zeros_like(space.nvec, dtype=np.int64)
+
+                if isinstance(space, spaces.Box):
+                    return np.zeros(space.shape, dtype=space.dtype)
+
+            raise
 
         input_price = max(
             1.0,
@@ -100,7 +133,7 @@ class MyObservationManager(FlexibleObservationManager):
 
         production_cost = float(awi.profile.cost)
 
-        # Cost-related features
+        # Cost features
         disposal_cost_ratio = np.clip(
             awi.current_disposal_cost / (2.0 * input_price),
             0.0,
@@ -119,7 +152,7 @@ class MyObservationManager(FlexibleObservationManager):
             1.0,
         )
 
-        # Urgency features
+        # Quantity pressure features
         needed_supplies_ratio = np.clip(
             (awi.needed_supplies / max(1, awi.n_lines) + 1.0) / 2.0,
             0.0,
@@ -132,7 +165,7 @@ class MyObservationManager(FlexibleObservationManager):
             1.0,
         )
 
-        # Profitability feature
+        # Margin feature
         margin = (
             output_price
             - input_price
@@ -158,21 +191,22 @@ class MyObservationManager(FlexibleObservationManager):
         )
 
         obs = np.concatenate([base, extras])
+
         assert np.all(obs >= 0.0)
-        assert np.all(obs <= 1.0)  
+        assert np.all(obs <= 1.0)
 
         return obs
 
     def make_first_observation(self, awi: OneShotAWI) -> np.ndarray:
-        """Creates the initial observation (returned from gym's reset())"""
-        return self.encode(awi) # to be consistent with the changed encode function
+        """Create the first observation."""
+        return self.encode(awi)
 
     def get_offers(
         self, awi: OneShotAWI, encoded: np.ndarray
     ) -> dict[str, Outcome | None]:
-        """Gets the offers from an encoded state"""
+        """Decode offers from an encoded state."""
         return super().get_offers(awi, encoded)
 
 
-# ensure that the folder containing models is created
+# Create model directory.
 MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
