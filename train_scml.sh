@@ -11,7 +11,7 @@ module load miniforge3/24.3.0-0
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate $PROJECT_DIR/envs/agentic
 
-cd $PROJECT_DIR/repos/profit-prophet
+cd "$SLURM_SUBMIT_DIR"
 
 echo "=== Host ==="
 hostname
