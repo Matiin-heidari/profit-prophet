@@ -1,4 +1,6 @@
 # trains an RL model
+import atexit
+import csv
 import os
 from multiprocessing import Process, Queue
 from typing import Any
@@ -597,17 +599,204 @@ class MyRewardFunction(DefaultRewardFunction):
         super().__init__()
         self.context = context
 
+        self.score_delta_weight = float(
+            os.environ.get("REWARD_SCORE_DELTA_WEIGHT", "0.1")
+        )
+
+        self.log_reward_components = (
+            os.environ.get("LOG_REWARD_COMPONENTS", "1") != "0"
+        )
+
+        self.reward_log_file = None
+        self.reward_log_writer = None
+        self.reward_log_rows_since_flush = 0
+        self.reward_log_flush_every = int(
+            os.environ.get("REWARD_LOG_FLUSH_EVERY", "1000")
+        )
+
+        if self.log_reward_components:
+            self._open_reward_log()
+
+        atexit.register(self._close_reward_log)
+
     def before_action(self, awi: OneShotAWI) -> float:
         return float(getattr(awi, "current_score", 0.0))
 
     def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: float):
-        base_reward = super().__call__(awi, action, info)
+        base_reward = _safe_float(super().__call__(awi, action, info))
 
-        previous_score = float(info or 0.0)
-        current_score = float(getattr(awi, "current_score", previous_score))
+        previous_score = _safe_float(info)
+        current_score = _safe_float(getattr(awi, "current_score", previous_score))
         score_delta = current_score - previous_score
+        score_delta_bonus = self.score_delta_weight * score_delta
 
-        return base_reward + 0.1 * score_delta
+        final_reward = base_reward + score_delta_bonus
+
+        if self.log_reward_components:
+            self._log_reward_components(
+                awi=awi,
+                action=action,
+                previous_score=previous_score,
+                current_score=current_score,
+                base_reward=base_reward,
+                score_delta=score_delta,
+                score_delta_bonus=score_delta_bonus,
+                final_reward=final_reward,
+            )
+
+        return final_reward
+
+    def _open_reward_log(self) -> None:
+        """Open one reward component log per worker process."""
+        run_name = os.environ.get("RUN_NAME", "default")
+        job_id = os.environ.get("SLURM_JOB_ID", "local")
+        context_name = type(self.context).__name__
+        pid = os.getpid()
+
+        log_dir = os.path.join(
+            "reward_component_logs",
+            run_name,
+            context_name,
+            job_id,
+        )
+        os.makedirs(log_dir, exist_ok=True)
+
+        log_path = os.path.join(log_dir, f"reward_components_{pid}.csv")
+
+        self.reward_log_file = open(log_path, "w", newline="")
+        self.reward_log_writer = csv.DictWriter(
+            self.reward_log_file,
+            fieldnames=[
+                "pid",
+                "context",
+                "current_step",
+                "relative_time",
+                "n_steps",
+                "needed_sales",
+                "needed_supplies",
+                "current_score",
+                "previous_score",
+                "score_delta",
+                "score_delta_weight",
+                "score_delta_bonus",
+                "base_reward",
+                "final_reward",
+                "current_disposal_cost",
+                "current_shortfall_penalty",
+                "current_storage_cost",
+                "current_inventory_input",
+                "current_inventory_output",
+                "n_action_responses",
+                "n_action_accept",
+                "n_action_reject",
+                "n_action_end",
+                "n_action_offer",
+            ],
+        )
+        self.reward_log_writer.writeheader()
+
+    def _close_reward_log(self) -> None:
+        """Flush and close the reward component log."""
+        if self.reward_log_file is None:
+            return
+
+        try:
+            self.reward_log_file.flush()
+            self.reward_log_file.close()
+        except Exception:
+            pass
+
+        self.reward_log_file = None
+        self.reward_log_writer = None
+
+    def _log_reward_components(
+        self,
+        awi: OneShotAWI,
+        action: dict[str, SAOResponse],
+        previous_score: float,
+        current_score: float,
+        base_reward: float,
+        score_delta: float,
+        score_delta_bonus: float,
+        final_reward: float,
+    ) -> None:
+        """Write one reward component row."""
+        if self.reward_log_writer is None:
+            return
+
+        action_counts = self._summarize_action(action)
+
+        self.reward_log_writer.writerow(
+            {
+                "pid": os.getpid(),
+                "context": type(self.context).__name__,
+                "current_step": _safe_float(getattr(awi, "current_step", 0)),
+                "relative_time": _safe_float(getattr(awi, "relative_time", 0.0)),
+                "n_steps": _safe_float(getattr(awi, "n_steps", 0)),
+                "needed_sales": _safe_float(getattr(awi, "needed_sales", 0)),
+                "needed_supplies": _safe_float(getattr(awi, "needed_supplies", 0)),
+                "current_score": current_score,
+                "previous_score": previous_score,
+                "score_delta": score_delta,
+                "score_delta_weight": self.score_delta_weight,
+                "score_delta_bonus": score_delta_bonus,
+                "base_reward": base_reward,
+                "final_reward": final_reward,
+                "current_disposal_cost": _safe_float(
+                    getattr(awi, "current_disposal_cost", 0.0)
+                ),
+                "current_shortfall_penalty": _safe_float(
+                    getattr(awi, "current_shortfall_penalty", 0.0)
+                ),
+                "current_storage_cost": _safe_float(
+                    getattr(awi, "current_storage_cost", 0.0)
+                ),
+                "current_inventory_input": _safe_float(
+                    getattr(awi, "current_inventory_input", 0.0)
+                ),
+                "current_inventory_output": _safe_float(
+                    getattr(awi, "current_inventory_output", 0.0)
+                ),
+                **action_counts,
+            }
+        )
+
+        self.reward_log_rows_since_flush += 1
+
+        if self.reward_log_rows_since_flush >= self.reward_log_flush_every:
+            self.reward_log_file.flush()
+            self.reward_log_rows_since_flush = 0
+
+    def _summarize_action(self, action: dict[str, SAOResponse]) -> dict[str, float]:
+        """Summarize response types in the selected action."""
+        counts = {
+            "n_action_responses": 0.0,
+            "n_action_accept": 0.0,
+            "n_action_reject": 0.0,
+            "n_action_end": 0.0,
+            "n_action_offer": 0.0,
+        }
+
+        if not isinstance(action, dict):
+            return counts
+
+        counts["n_action_responses"] = float(len(action))
+
+        for response in action.values():
+            response_type = str(getattr(response, "response", "")).lower()
+            outcome = getattr(response, "outcome", None)
+
+            if "accept" in response_type:
+                counts["n_action_accept"] += 1.0
+            elif "reject" in response_type:
+                counts["n_action_reject"] += 1.0
+            elif "end" in response_type:
+                counts["n_action_end"] += 1.0
+
+            if outcome is not None:
+                counts["n_action_offer"] += 1.0
+
+        return counts
 
 
 def make_env(context_name) -> OneShotEnv:
