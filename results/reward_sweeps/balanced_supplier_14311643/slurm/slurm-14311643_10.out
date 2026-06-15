@@ -1,0 +1,43 @@
+================================================================================
+JobID = 14313191
+User = u28153, Account = kisski-aai-ss26
+Partition = kisski, Nodelist = ggpu180
+================================================================================
+=== Sweep config ===
+task_id=10
+RUN_NAME=sweep_bs_10_productivity_001
+TRAIN_CONTEXTS=BalancedSupplierContext
+REWARD_SCORE_DELTA_WEIGHT=0.1
+REWARD_NEED_WEIGHT=0.0
+REWARD_SHORTFALL_WEIGHT=0.0
+REWARD_OVERSHOOT_WEIGHT=0.0
+REWARD_DISPOSAL_WEIGHT=0.0
+REWARD_PRODUCTIVITY_WEIGHT=0.001
+REWARD_TIME_PRESSURE_WEIGHT=1.0
+REWARD_NEED_NORMALIZER=0.0
+Detected 48 cores from SLURM_CPUS_PER_TASK → using 8 envs per model (1 model(s) training in parallel)
+=== Training config ===
+ntrain: 300000
+contexts: ['BalancedSupplierContext']
+run_name: sweep_bs_10_productivity_001
+eval_freq: 50000
+n_eval_episodes: 3
+reward_score_delta_weight: 0.1
+reward_need_weight: 0.0
+reward_shortfall_weight: 0.0
+reward_overshoot_weight: 0.0
+reward_disposal_weight: 0.0
+reward_productivity_weight: 0.001
+reward_time_pressure_weight: 1.0
+reward_need_normalizer: 0.0
+diagnostics_freq: 10000
+rl_agent_code: On
+Training as BalancedSupplierContext
+============ Job Information ===================================================
+Submitted: 2026-06-15T17:35:39
+Started: 2026-06-15T21:24:42
+Ended: 2026-06-15T21:46:14
+Elapsed: 22 min, Limit: 180 min, Difference: 158 min
+CPUs: 48, Nodes: 1
+Estimated credit Consumption:  core-hours
+================================================================================
