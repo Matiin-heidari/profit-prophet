@@ -402,46 +402,130 @@ class EvaluationCallback(BaseCallback):
 
 
 class TrainingDiagnosticsCallback(BaseCallback):
-    """Log observation, action and reward diagnostics."""
+    """Log interval-based observation, action and reward diagnostics."""
 
     def __init__(self, log_freq: int):
         super().__init__()
         self.log_freq = max(1, log_freq)
         self.last_log_step = 0
 
+        self.reward_buffer: list[float] = []
+        self.action_buffer: list[float] = []
+        self.done_buffer: list[float] = []
+
     def _on_step(self) -> bool:
-        if self.num_timesteps - self.last_log_step < self.log_freq:
-            return True
-
-        self.last_log_step = self.num_timesteps
-
         obs = self.locals.get("new_obs")
         rewards = self.locals.get("rewards")
         dones = self.locals.get("dones")
         actions = self.locals.get("actions")
 
-        self._log_array("diagnostics/obs", obs, log_features=True)
-        self._log_array("diagnostics/reward", rewards)
-        self._log_array("diagnostics/action", actions)
+        self._extend_buffer(self.reward_buffer, rewards)
+        self._extend_buffer(self.action_buffer, actions)
+        self._extend_buffer(self.done_buffer, dones)
 
-        if dones is not None:
-            done_array = np.asarray(dones, dtype=np.float32)
+        if self.num_timesteps - self.last_log_step < self.log_freq:
+            return True
+
+        self.last_log_step = self.num_timesteps
+
+        # Snapshot diagnostics for the current observation.
+        self._log_array_snapshot("diagnostics/obs", obs, log_features=True)
+
+        # Interval diagnostics over all steps since the last log.
+        self._log_interval("diagnostics/reward_interval", self.reward_buffer, log_signs=True)
+        self._log_interval("diagnostics/action_interval", self.action_buffer)
+        self._log_interval("diagnostics/done_interval", self.done_buffer)
+
+        # Backward-compatible aliases for quick checks.
+        self._log_interval("diagnostics/reward", self.reward_buffer, log_signs=True)
+
+        if self.done_buffer:
+            done_array = np.asarray(self.done_buffer, dtype=np.float32)
             self.logger.record("diagnostics/done_fraction", float(np.mean(done_array)))
+
+        self.reward_buffer.clear()
+        self.action_buffer.clear()
+        self.done_buffer.clear()
 
         self.logger.dump(self.num_timesteps)
         return True
 
-    def _log_array(
+    def _extend_buffer(self, buffer: list[float], value: Any) -> None:
+        """Append finite numeric values to a buffer."""
+        if value is None:
+            return
+
+        try:
+            array = np.asarray(value, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return
+
+        finite_values = array[np.isfinite(array)]
+
+        if finite_values.size == 0:
+            return
+
+        buffer.extend(float(value) for value in finite_values)
+
+    def _log_interval(
+        self,
+        prefix: str,
+        values: list[float],
+        log_signs: bool = False,
+    ) -> None:
+        """Log summary statistics for an interval buffer."""
+        self.logger.record(f"{prefix}_count", float(len(values)))
+
+        if not values:
+            return
+
+        array = np.asarray(values, dtype=np.float32)
+        finite_array = array[np.isfinite(array)]
+
+        if finite_array.size == 0:
+            return
+
+        self.logger.record(f"{prefix}_mean", float(np.mean(finite_array)))
+        self.logger.record(f"{prefix}_std", float(np.std(finite_array)))
+        self.logger.record(f"{prefix}_min", float(np.min(finite_array)))
+        self.logger.record(f"{prefix}_max", float(np.max(finite_array)))
+        self.logger.record(f"{prefix}_sum", float(np.sum(finite_array)))
+        self.logger.record(f"{prefix}_abs_mean", float(np.mean(np.abs(finite_array))))
+
+        if log_signs:
+            eps = 1e-12
+
+            self.logger.record(
+                f"{prefix}_nonzero_fraction",
+                float(np.mean(np.abs(finite_array) > eps)),
+            )
+            self.logger.record(
+                f"{prefix}_zero_fraction",
+                float(np.mean(np.abs(finite_array) <= eps)),
+            )
+            self.logger.record(
+                f"{prefix}_positive_fraction",
+                float(np.mean(finite_array > eps)),
+            )
+            self.logger.record(
+                f"{prefix}_negative_fraction",
+                float(np.mean(finite_array < -eps)),
+            )
+
+    def _log_array_snapshot(
         self,
         prefix: str,
         value: Any,
         log_features: bool = False,
     ) -> None:
-        """Log array summary stats."""
+        """Log summary stats for the current array snapshot."""
         if value is None:
             return
 
-        array = np.asarray(value, dtype=np.float32)
+        try:
+            array = np.asarray(value, dtype=np.float32)
+        except (TypeError, ValueError):
+            return
 
         if array.size == 0:
             return
