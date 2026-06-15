@@ -112,6 +112,80 @@ def _extract_world_stat(world: Any, key: str) -> float | None:
 
     return None
 
+def _agent_code(agent_id: str) -> str:
+    """Extract the short SCML agent code from an agent id."""
+    base = agent_id.split("@", 1)[0]
+    return base.lstrip("0123456789")
+
+
+def _is_rl_agent_score_key(agent_id: str) -> bool:
+    """Detect the RL agent in world.scores()."""
+    return _agent_code(agent_id) == "On"
+
+
+def _rank_of_agents(scores: dict[str, float], agent_ids: list[str]) -> float:
+    """Return the best 1-based rank of selected agents."""
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    ranks = {agent_id: rank for rank, (agent_id, _) in enumerate(ranked, start=1)}
+
+    selected_ranks = [
+        ranks[agent_id]
+        for agent_id in agent_ids
+        if agent_id in ranks
+    ]
+
+    if not selected_ranks:
+        return float(len(scores))
+
+    return float(min(selected_ranks))
+
+
+def _numeric_values(value: Any) -> list[float]:
+    """Convert scalar/list/array values to numeric values."""
+    if value is None:
+        return []
+
+    if isinstance(value, (list, tuple, np.ndarray)):
+        raw_values = list(value)
+    elif hasattr(value, "tolist"):
+        raw_values = value.tolist()
+    elif hasattr(value, "to_list"):
+        raw_values = value.to_list()
+    elif hasattr(value, "values"):
+        try:
+            raw_values = list(value.values)
+        except Exception:
+            raw_values = [value]
+    else:
+        raw_values = [value]
+
+    values = []
+    for raw_value in raw_values:
+        try:
+            values.append(float(raw_value))
+        except (TypeError, ValueError):
+            continue
+
+    return values
+
+
+def _add_series_metrics(
+    metrics: dict[str, float],
+    name: str,
+    value: Any,
+) -> None:
+    """Add mean, last, min, max and sum for a numeric series."""
+    values = _numeric_values(value)
+
+    if not values:
+        return
+
+    metrics[f"{name}_mean"] = float(np.mean(values))
+    metrics[f"{name}_last"] = float(values[-1])
+    metrics[f"{name}_min"] = float(np.min(values))
+    metrics[f"{name}_max"] = float(np.max(values))
+    metrics[f"{name}_sum"] = float(np.sum(values))
+
 
 def evaluate_model(model, context_name: str) -> dict[str, float]:
     """Run one small evaluation world and return loggable metrics."""
@@ -128,7 +202,6 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
         ),
     )
 
-    # Avoid progress output during training evaluation.
     if hasattr(world, "run"):
         world.run()
     else:
@@ -136,30 +209,92 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
 
     metrics: dict[str, float] = {}
 
-    if hasattr(world, "scores"):
-        metrics["score"] = _extract_score(world.scores())
+    scores: dict[str, float] = {}
+    my_agent_ids: list[str] = []
 
-    for key in (
-        "n_negotiation_successful",
-        "n_negotiation_failed",
-        "n_negotiation_rounds_successful",
-        "n_negotiation_rounds_failed",
-        "n_contracts_signed",
-        "n_contracts_concluded",
-        "n_contracts_executed",
-        "n_contracts_cancelled",
-        "n_contracts_dropped",
-        "n_contracts_nullified",
-        "agreement_rate",
-        "agreement_fraction",
-        "contract_execution_fraction",
-        "productivity",
-        "welfare",
-        "relative_welfare",
-    ):
-        value = _extract_world_stat(world, key)
-        if value is not None:
-            metrics[key] = value
+    if hasattr(world, "scores"):
+        raw_scores = world.scores()
+        scores = {
+            str(agent_id): float(score)
+            for agent_id, score in raw_scores.items()
+        }
+
+        my_agent_ids = [
+            agent_id
+            for agent_id in scores
+            if _is_rl_agent_score_key(agent_id)
+        ]
+
+        opponent_ids = [
+            agent_id
+            for agent_id in scores
+            if agent_id not in my_agent_ids
+        ]
+
+        my_scores = [scores[agent_id] for agent_id in my_agent_ids]
+        opponent_scores = [scores[agent_id] for agent_id in opponent_ids]
+
+        metrics["n_agents"] = float(len(scores))
+        metrics["n_rl_agents"] = float(len(my_agent_ids))
+        metrics["world_score_mean"] = _mean_numeric(list(scores.values()))
+
+        if my_scores:
+            my_score = _mean_numeric(my_scores)
+            metrics["score"] = my_score
+            metrics["my_score"] = my_score
+            metrics["my_rank"] = _rank_of_agents(scores, my_agent_ids)
+
+        if opponent_scores:
+            opponent_score = _mean_numeric(opponent_scores)
+            metrics["opponent_score_mean"] = opponent_score
+
+            if my_scores:
+                metrics["score_gap"] = metrics["my_score"] - opponent_score
+
+    stats = getattr(world, "stats", None)
+
+    if isinstance(stats, dict):
+        # World-level metrics.
+        for key in (
+            "n_negotiation_successful",
+            "n_negotiation_failed",
+            "n_negotiation_rounds_successful",
+            "n_negotiation_rounds_failed",
+            "n_contracts_signed",
+            "n_contracts_concluded",
+            "n_contracts_executed",
+            "n_contracts_cancelled",
+            "n_contracts_dropped",
+            "n_contracts_nullified",
+            "agreement_rate",
+            "agreement_fraction",
+            "contract_execution_fraction",
+            "productivity",
+            "welfare",
+            "relative_welfare",
+        ):
+            if key in stats:
+                _add_series_metrics(metrics, f"world/{key}", stats[key])
+
+        # RL-agent-specific metrics.
+        for agent_id in my_agent_ids:
+            for key in (
+                "score",
+                "balance",
+                "bankrupt",
+                "productivity",
+                "shortfall_quantity",
+                "shortfall_penalty",
+                "storage_cost",
+                "disposal_cost",
+                "inventory_penalized",
+                "inventory_input",
+                "inventory_output",
+            ):
+                stat_key = f"{key}_{agent_id}"
+
+                if stat_key in stats:
+                    _add_series_metrics(metrics, f"my/{key}", stats[stat_key])
 
     return metrics
 
@@ -219,16 +354,13 @@ class EvaluationCallback(BaseCallback):
                 if not values:
                     continue
 
-                self.logger.record(
-                    f"eval/{metric_name}",
-                    float(np.mean(values)),
-                )
+                mean_value = float(np.mean(values))
 
-                if metric_name == "score":
-                    self.logger.record("eval/score_mean", float(np.mean(values)))
-                    self.logger.record("eval/score_std", float(np.std(values)))
-                    self.logger.record("eval/score_min", float(np.min(values)))
-                    self.logger.record("eval/score_max", float(np.max(values)))
+                self.logger.record(f"eval/{metric_name}", mean_value)
+                self.logger.record(f"eval/{metric_name}_mean", mean_value)
+                self.logger.record(f"eval/{metric_name}_std", float(np.std(values)))
+                self.logger.record(f"eval/{metric_name}_min", float(np.min(values)))
+                self.logger.record(f"eval/{metric_name}_max", float(np.max(values)))
 
             self.logger.record("eval/failed", 0)
 
