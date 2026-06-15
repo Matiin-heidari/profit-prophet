@@ -14,7 +14,7 @@ from scml.oneshot.rl.common import model_wrapper
 from scml.oneshot.rl.env import OneShotEnv
 from scml.oneshot.rl.reward import DefaultRewardFunction
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from tqdm import tqdm
 
 from .common import (
@@ -30,24 +30,59 @@ NTRAINING = 300000  # number of training steps
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
-    """Convert values to float for logging."""
+    """Convert a value to finite float."""
     try:
         if value is None:
             return default
-        return float(value)
+
+        value_float = float(value)
+
+        if not np.isfinite(value_float):
+            return default
+
+        return value_float
+
     except (TypeError, ValueError):
         return default
 
 
-def _mean_numeric(values: list[Any], default: float = 0.0) -> float:
-    """Average numeric values only."""
-    numeric_values = []
+def _numeric_values(value: Any) -> list[float]:
+    """Convert scalar/list/array values to finite floats."""
+    if value is None:
+        return []
 
-    for value in values:
+    if isinstance(value, (list, tuple, np.ndarray)):
+        raw_values = list(value)
+    elif hasattr(value, "tolist"):
+        raw_values = value.tolist()
+    elif hasattr(value, "to_list"):
+        raw_values = value.to_list()
+    elif hasattr(value, "values"):
         try:
-            numeric_values.append(float(value))
+            raw_values = list(value.values)
+        except Exception:
+            raw_values = [value]
+    else:
+        raw_values = [value]
+
+    values = []
+
+    for raw_value in raw_values:
+        try:
+            value_float = float(raw_value)
+
+            if np.isfinite(value_float):
+                values.append(value_float)
+
         except (TypeError, ValueError):
             continue
+
+    return values
+
+
+def _mean_numeric(values: list[Any], default: float = 0.0) -> float:
+    """Average numeric values only."""
+    numeric_values = _numeric_values(values)
 
     if not numeric_values:
         return default
@@ -55,55 +90,18 @@ def _mean_numeric(values: list[Any], default: float = 0.0) -> float:
     return float(np.mean(numeric_values))
 
 
-def _extract_score(scores: Any) -> float:
-    """Extract a usable score from SCML score outputs."""
-    if scores is None:
-        return 0.0
-
-    # Pandas DataFrame-like output.
-    if hasattr(scores, "columns") and "score" in scores.columns:
-        return _mean_numeric(list(scores["score"]))
-
-    # Pandas Series-like output.
-    if hasattr(scores, "to_dict"):
-        scores = scores.to_dict()
-
-    # Dict-like output.
-    if isinstance(scores, dict):
-        return _mean_numeric(list(scores.values()))
-
-    # List/tuple-like output.
-    if isinstance(scores, (list, tuple)):
-        return _mean_numeric(list(scores))
-
-    return _safe_float(scores)
-
-
 def _safe_numeric_summary(value: Any, default: float = 0.0) -> float:
-    """Convert scalar/list/array values to a numeric mean."""
-    if value is None:
+    """Summarize scalar/list/array values as a mean."""
+    values = _numeric_values(value)
+
+    if not values:
         return default
 
-    if isinstance(value, (list, tuple, np.ndarray)):
-        return _mean_numeric(list(value), default=default)
-
-    if hasattr(value, "tolist"):
-        return _mean_numeric(value.tolist(), default=default)
-
-    if hasattr(value, "to_list"):
-        return _mean_numeric(value.to_list(), default=default)
-
-    if hasattr(value, "values"):
-        try:
-            return _mean_numeric(list(value.values), default=default)
-        except Exception:
-            pass
-
-    return _safe_float(value, default=default)
+    return float(np.mean(values))
 
 
 def _extract_world_stat(world: Any, key: str) -> float | None:
-    """Read optional world statistics without breaking training."""
+    """Read optional world statistics."""
     for attr_name in ("stats", "statistics"):
         stats = getattr(world, attr_name, None)
 
@@ -112,15 +110,34 @@ def _extract_world_stat(world: Any, key: str) -> float | None:
 
     return None
 
+
+def _metric_safe_name(name: str) -> str:
+    """Make names safe for TensorBoard tags."""
+    safe_chars = []
+
+    for char in name:
+        if char.isalnum() or char in ("_", "-"):
+            safe_chars.append(char)
+        else:
+            safe_chars.append("_")
+
+    return "".join(safe_chars) or "unknown"
+
+
 def _agent_code(agent_id: str) -> str:
     """Extract the short SCML agent code from an agent id."""
     base = agent_id.split("@", 1)[0]
     return base.lstrip("0123456789")
 
 
+def _rl_agent_code() -> str:
+    """Return the score-code used for the RL agent."""
+    return os.environ.get("RL_AGENT_CODE", "On")
+
+
 def _is_rl_agent_score_key(agent_id: str) -> bool:
     """Detect the RL agent in world.scores()."""
-    return _agent_code(agent_id) == "On"
+    return _agent_code(agent_id) == _rl_agent_code()
 
 
 def _rank_of_agents(scores: dict[str, float], agent_ids: list[str]) -> float:
@@ -140,41 +157,12 @@ def _rank_of_agents(scores: dict[str, float], agent_ids: list[str]) -> float:
     return float(min(selected_ranks))
 
 
-def _numeric_values(value: Any) -> list[float]:
-    """Convert scalar/list/array values to numeric values."""
-    if value is None:
-        return []
-
-    if isinstance(value, (list, tuple, np.ndarray)):
-        raw_values = list(value)
-    elif hasattr(value, "tolist"):
-        raw_values = value.tolist()
-    elif hasattr(value, "to_list"):
-        raw_values = value.to_list()
-    elif hasattr(value, "values"):
-        try:
-            raw_values = list(value.values)
-        except Exception:
-            raw_values = [value]
-    else:
-        raw_values = [value]
-
-    values = []
-    for raw_value in raw_values:
-        try:
-            values.append(float(raw_value))
-        except (TypeError, ValueError):
-            continue
-
-    return values
-
-
 def _add_series_metrics(
     metrics: dict[str, float],
     name: str,
     value: Any,
 ) -> None:
-    """Add mean, last, min, max and sum for a numeric series."""
+    """Add summary metrics for a numeric series."""
     values = _numeric_values(value)
 
     if not values:
@@ -185,10 +173,30 @@ def _add_series_metrics(
     metrics[f"{name}_min"] = float(np.min(values))
     metrics[f"{name}_max"] = float(np.max(values))
     metrics[f"{name}_sum"] = float(np.sum(values))
+    metrics[f"{name}_count"] = float(len(values))
+
+
+def _add_my_agent_stat_metrics(
+    metrics: dict[str, float],
+    stats: dict[str, Any],
+    agent_ids: list[str],
+    key: str,
+) -> None:
+    """Aggregate a statistic over all RL-agent ids."""
+    values = []
+
+    for agent_id in agent_ids:
+        stat_key = f"{key}_{agent_id}"
+
+        if stat_key in stats:
+            values.extend(_numeric_values(stats[stat_key]))
+
+    if values:
+        _add_series_metrics(metrics, f"my/{key}", values)
 
 
 def evaluate_model(model, context_name: str) -> dict[str, float]:
-    """Run one small evaluation world and return loggable metrics."""
+    """Run one evaluation world and return loggable metrics."""
     context = make_context(context_name)
 
     world, _ = context.generate(
@@ -208,7 +216,6 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
         world.run_with_progress()
 
     metrics: dict[str, float] = {}
-
     scores: dict[str, float] = {}
     my_agent_ids: list[str] = []
 
@@ -217,6 +224,7 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
         scores = {
             str(agent_id): float(score)
             for agent_id, score in raw_scores.items()
+            if np.isfinite(float(score))
         }
 
         my_agent_ids = [
@@ -238,6 +246,10 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
         metrics["n_rl_agents"] = float(len(my_agent_ids))
         metrics["world_score_mean"] = _mean_numeric(list(scores.values()))
 
+        if scores:
+            metrics["top_score"] = float(max(scores.values()))
+            metrics["bottom_score"] = float(min(scores.values()))
+
         if my_scores:
             my_score = _mean_numeric(my_scores)
             metrics["score"] = my_score
@@ -247,9 +259,29 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
         if opponent_scores:
             opponent_score = _mean_numeric(opponent_scores)
             metrics["opponent_score_mean"] = opponent_score
+            metrics["best_opponent_score"] = float(max(opponent_scores))
+            metrics["worst_opponent_score"] = float(min(opponent_scores))
 
             if my_scores:
                 metrics["score_gap"] = metrics["my_score"] - opponent_score
+                metrics["score_gap_vs_best_opponent"] = (
+                    metrics["my_score"] - metrics["best_opponent_score"]
+                )
+
+        opponent_scores_by_code: dict[str, list[float]] = {}
+
+        for opponent_id in opponent_ids:
+            code = _metric_safe_name(_agent_code(opponent_id))
+            opponent_scores_by_code.setdefault(code, []).append(scores[opponent_id])
+
+        for code, typed_scores in opponent_scores_by_code.items():
+            typed_score_mean = _mean_numeric(typed_scores)
+
+            metrics[f"opponent/{code}_score_mean"] = typed_score_mean
+            metrics[f"opponent/{code}_count"] = float(len(typed_scores))
+
+            if my_scores:
+                metrics[f"score_gap_vs/{code}"] = metrics["my_score"] - typed_score_mean
 
     stats = getattr(world, "stats", None)
 
@@ -277,24 +309,20 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
                 _add_series_metrics(metrics, f"world/{key}", stats[key])
 
         # RL-agent-specific metrics.
-        for agent_id in my_agent_ids:
-            for key in (
-                "score",
-                "balance",
-                "bankrupt",
-                "productivity",
-                "shortfall_quantity",
-                "shortfall_penalty",
-                "storage_cost",
-                "disposal_cost",
-                "inventory_penalized",
-                "inventory_input",
-                "inventory_output",
-            ):
-                stat_key = f"{key}_{agent_id}"
-
-                if stat_key in stats:
-                    _add_series_metrics(metrics, f"my/{key}", stats[stat_key])
+        for key in (
+            "score",
+            "balance",
+            "bankrupt",
+            "productivity",
+            "shortfall_quantity",
+            "shortfall_penalty",
+            "storage_cost",
+            "disposal_cost",
+            "inventory_penalized",
+            "inventory_input",
+            "inventory_output",
+        ):
+            _add_my_agent_stat_metrics(metrics, stats, my_agent_ids, key)
 
     return metrics
 
@@ -348,7 +376,7 @@ class EvaluationCallback(BaseCallback):
                 values = [
                     float(result[metric_name])
                     for result in results
-                    if metric_name in result
+                    if metric_name in result and np.isfinite(float(result[metric_name]))
                 ]
 
                 if not values:
@@ -365,12 +393,117 @@ class EvaluationCallback(BaseCallback):
             self.logger.record("eval/failed", 0)
 
         except Exception as e:
-            # Logging must never kill training.
+            # Logging must not stop training.
             self.logger.record("eval/failed", 1)
-            self.logger.record("eval/error", str(e))
+            print(f"[eval failed] {self.context_name}: {e}")
 
         self.logger.dump(self.num_timesteps)
         return True
+
+
+class TrainingDiagnosticsCallback(BaseCallback):
+    """Log observation, action and reward diagnostics."""
+
+    def __init__(self, log_freq: int):
+        super().__init__()
+        self.log_freq = max(1, log_freq)
+        self.last_log_step = 0
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps - self.last_log_step < self.log_freq:
+            return True
+
+        self.last_log_step = self.num_timesteps
+
+        obs = self.locals.get("new_obs")
+        rewards = self.locals.get("rewards")
+        dones = self.locals.get("dones")
+        actions = self.locals.get("actions")
+
+        self._log_array("diagnostics/obs", obs, log_features=True)
+        self._log_array("diagnostics/reward", rewards)
+        self._log_array("diagnostics/action", actions)
+
+        if dones is not None:
+            done_array = np.asarray(dones, dtype=np.float32)
+            self.logger.record("diagnostics/done_fraction", float(np.mean(done_array)))
+
+        self.logger.dump(self.num_timesteps)
+        return True
+
+    def _log_array(
+        self,
+        prefix: str,
+        value: Any,
+        log_features: bool = False,
+    ) -> None:
+        """Log array summary stats."""
+        if value is None:
+            return
+
+        array = np.asarray(value, dtype=np.float32)
+
+        if array.size == 0:
+            return
+
+        finite_mask = np.isfinite(array)
+        finite_values = array[finite_mask]
+
+        self.logger.record(f"{prefix}_nan_count", float(np.isnan(array).sum()))
+        self.logger.record(f"{prefix}_inf_count", float(np.isinf(array).sum()))
+
+        if finite_values.size == 0:
+            return
+
+        self.logger.record(f"{prefix}_mean", float(np.mean(finite_values)))
+        self.logger.record(f"{prefix}_std", float(np.std(finite_values)))
+        self.logger.record(f"{prefix}_min", float(np.min(finite_values)))
+        self.logger.record(f"{prefix}_max", float(np.max(finite_values)))
+
+        if prefix == "diagnostics/obs":
+            self.logger.record(
+                "diagnostics/obs_low_clip_fraction",
+                float(np.mean(finite_values <= 0.0)),
+            )
+            self.logger.record(
+                "diagnostics/obs_high_clip_fraction",
+                float(np.mean(finite_values >= 1.0)),
+            )
+
+        if not log_features:
+            return
+
+        if array.ndim != 2:
+            return
+
+        feature_means = np.nanmean(array, axis=0)
+        feature_stds = np.nanstd(array, axis=0)
+        feature_mins = np.nanmin(array, axis=0)
+        feature_maxs = np.nanmax(array, axis=0)
+
+        for idx, value_mean in enumerate(feature_means):
+            self.logger.record(
+                f"{prefix}_feature_{idx:02d}_mean",
+                _safe_float(value_mean),
+            )
+
+        for idx, value_std in enumerate(feature_stds):
+            self.logger.record(
+                f"{prefix}_feature_{idx:02d}_std",
+                _safe_float(value_std),
+            )
+
+        for idx, value_min in enumerate(feature_mins):
+            self.logger.record(
+                f"{prefix}_feature_{idx:02d}_min",
+                _safe_float(value_min),
+            )
+
+        for idx, value_max in enumerate(feature_maxs):
+            self.logger.record(
+                f"{prefix}_feature_{idx:02d}_max",
+                _safe_float(value_max),
+            )
 
 
 class MyRewardFunction(DefaultRewardFunction):
@@ -410,7 +543,7 @@ def try_a_model(
     model,
     context_name: str,
 ):
-    """Runs a single simulation with one agent controlled with the given model."""
+    """Run a single simulation with one trained model."""
     context = make_context(context_name)
 
     world, _ = context.generate(
@@ -436,9 +569,11 @@ def train_one(context_name, ntrain, params, queue):
     run_name = os.environ.get("RUN_NAME", "default")
     eval_freq = int(os.environ.get("EVAL_FREQ", str(max(ntrain // 5, 1))))
     n_eval_episodes = int(os.environ.get("N_EVAL_EPISODES", "3"))
+    diagnostics_freq = int(os.environ.get("DIAGNOSTICS_FREQ", str(max(ntrain // 20, 1))))
 
     callbacks: list[BaseCallback] = [
         ProgressCallback(queue, context_name),
+        TrainingDiagnosticsCallback(log_freq=diagnostics_freq),
     ]
 
     if eval_freq > 0 and n_eval_episodes > 0:
@@ -451,8 +586,13 @@ def train_one(context_name, ntrain, params, queue):
         )
 
     try:
-        env = SubprocVecEnv(
-            [lambda: make_env(context_name)] * params["n_envs"]
+        env = VecMonitor(
+            SubprocVecEnv(
+                [
+                    lambda context_name=context_name: make_env(context_name)
+                    for _ in range(params["n_envs"])
+                ]
+            )
         )
 
         model = TrainingAlgorithm(
@@ -480,7 +620,7 @@ def train_one(context_name, ntrain, params, queue):
 
 
 def main(ntrain: int = NTRAINING):
-    """Train models for all selected contexts."""
+    """Train models for selected contexts."""
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
 
     if slurm_cpus:
@@ -497,6 +637,8 @@ def main(ntrain: int = NTRAINING):
     print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
     print(f"eval_freq: {os.environ.get('EVAL_FREQ', f'{max(ntrain // 5, 1)}')}")
     print(f"n_eval_episodes: {os.environ.get('N_EVAL_EPISODES', '3')}")
+    print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
+    print(f"rl_agent_code: {_rl_agent_code()}")
 
     queue = Queue()
 
@@ -513,10 +655,11 @@ def main(ntrain: int = NTRAINING):
             for context_name in batch
         ]
 
-        for p in processes:
-            p.start()
+        for process in processes:
+            process.start()
 
         finished = 0
+
         while finished < len(batch):
             context_name, steps = queue.get()
 
@@ -526,8 +669,8 @@ def main(ntrain: int = NTRAINING):
             else:
                 bars[context_name].update(steps)
 
-        for p in processes:
-            p.join()
+        for process in processes:
+            process.join()
 
 
 if __name__ == "__main__":
