@@ -593,7 +593,7 @@ class TrainingDiagnosticsCallback(BaseCallback):
 
 
 class MyRewardFunction(DefaultRewardFunction):
-    """Reward shaping using score improvement."""
+    """Reward shaping with configurable terms."""
 
     def __init__(self, context: GeneralContext):
         super().__init__()
@@ -601,6 +601,27 @@ class MyRewardFunction(DefaultRewardFunction):
 
         self.score_delta_weight = float(
             os.environ.get("REWARD_SCORE_DELTA_WEIGHT", "0.1")
+        )
+        self.need_weight = float(
+            os.environ.get("REWARD_NEED_WEIGHT", "0.0")
+        )
+        self.shortfall_weight = float(
+            os.environ.get("REWARD_SHORTFALL_WEIGHT", "0.0")
+        )
+        self.overshoot_weight = float(
+            os.environ.get("REWARD_OVERSHOOT_WEIGHT", "0.0")
+        )
+        self.disposal_weight = float(
+            os.environ.get("REWARD_DISPOSAL_WEIGHT", "0.0")
+        )
+        self.productivity_weight = float(
+            os.environ.get("REWARD_PRODUCTIVITY_WEIGHT", "0.0")
+        )
+        self.time_pressure_weight = float(
+            os.environ.get("REWARD_TIME_PRESSURE_WEIGHT", "1.0")
+        )
+        self.need_normalizer = float(
+            os.environ.get("REWARD_NEED_NORMALIZER", "0.0")
         )
 
         self.log_reward_components = (
@@ -630,7 +651,18 @@ class MyRewardFunction(DefaultRewardFunction):
         score_delta = current_score - previous_score
         score_delta_bonus = self.score_delta_weight * score_delta
 
-        final_reward = base_reward + score_delta_bonus
+        reward_terms = self._calculate_reward_terms(awi)
+
+        shaping_reward = (
+            score_delta_bonus
+            + reward_terms["need_penalty"]
+            + reward_terms["shortfall_penalty_term"]
+            + reward_terms["overshoot_penalty"]
+            + reward_terms["disposal_penalty_term"]
+            + reward_terms["productivity_bonus"]
+        )
+
+        final_reward = base_reward + shaping_reward
 
         if self.log_reward_components:
             self._log_reward_components(
@@ -641,10 +673,96 @@ class MyRewardFunction(DefaultRewardFunction):
                 base_reward=base_reward,
                 score_delta=score_delta,
                 score_delta_bonus=score_delta_bonus,
+                shaping_reward=shaping_reward,
                 final_reward=final_reward,
+                reward_terms=reward_terms,
             )
 
         return final_reward
+
+    def _calculate_reward_terms(self, awi: OneShotAWI) -> dict[str, float | str]:
+        """Calculate configurable reward shaping terms."""
+        needed_sales = _safe_float(getattr(awi, "needed_sales", 0.0))
+        needed_supplies = _safe_float(getattr(awi, "needed_supplies", 0.0))
+
+        context_name = type(self.context).__name__
+
+        if "Supplier" in context_name:
+            active_need = needed_sales
+            active_need_type = "sales"
+        elif "Consumer" in context_name:
+            active_need = needed_supplies
+            active_need_type = "supplies"
+        else:
+            if abs(needed_sales) >= abs(needed_supplies):
+                active_need = needed_sales
+                active_need_type = "sales"
+            else:
+                active_need = needed_supplies
+                active_need_type = "supplies"
+
+        unmet_need = max(0.0, active_need)
+        overshoot = max(0.0, -active_need)
+
+        n_lines = max(1.0, _safe_float(getattr(awi, "n_lines", 1.0), default=1.0))
+
+        if self.need_normalizer > 0.0:
+            need_scale = self.need_normalizer
+        else:
+            need_scale = n_lines
+
+        unmet_need_scaled = unmet_need / max(1.0, need_scale)
+        overshoot_scaled = overshoot / max(1.0, need_scale)
+
+        relative_time = _safe_float(getattr(awi, "relative_time", 0.0))
+        time_multiplier = 1.0 + self.time_pressure_weight * relative_time
+
+        current_shortfall_penalty = _safe_float(
+            getattr(awi, "current_shortfall_penalty", 0.0)
+        )
+        current_disposal_cost = _safe_float(
+            getattr(awi, "current_disposal_cost", 0.0)
+        )
+
+        need_penalty = -self.need_weight * unmet_need_scaled * time_multiplier
+        shortfall_penalty_term = (
+            -self.shortfall_weight
+            * unmet_need_scaled
+            * current_shortfall_penalty
+            * time_multiplier
+        )
+
+        overshoot_penalty = -self.overshoot_weight * overshoot_scaled
+        disposal_penalty_term = (
+            -self.disposal_weight
+            * overshoot_scaled
+            * current_disposal_cost
+        )
+
+        productivity_proxy = max(0.0, 1.0 - min(1.0, unmet_need_scaled))
+        productivity_bonus = self.productivity_weight * productivity_proxy
+
+        return {
+            "active_need_type": active_need_type,
+            "active_need": active_need,
+            "needed_sales": needed_sales,
+            "needed_supplies": needed_supplies,
+            "unmet_need": unmet_need,
+            "overshoot": overshoot,
+            "need_scale": need_scale,
+            "unmet_need_scaled": unmet_need_scaled,
+            "overshoot_scaled": overshoot_scaled,
+            "relative_time": relative_time,
+            "time_multiplier": time_multiplier,
+            "current_shortfall_penalty": current_shortfall_penalty,
+            "current_disposal_cost": current_disposal_cost,
+            "productivity_proxy": productivity_proxy,
+            "need_penalty": need_penalty,
+            "shortfall_penalty_term": shortfall_penalty_term,
+            "overshoot_penalty": overshoot_penalty,
+            "disposal_penalty_term": disposal_penalty_term,
+            "productivity_bonus": productivity_bonus,
+        }
 
     def _open_reward_log(self) -> None:
         """Open one reward component log per worker process."""
@@ -672,13 +790,33 @@ class MyRewardFunction(DefaultRewardFunction):
                 "current_step",
                 "relative_time",
                 "n_steps",
+                "active_need_type",
+                "active_need",
                 "needed_sales",
                 "needed_supplies",
+                "unmet_need",
+                "overshoot",
+                "need_scale",
+                "unmet_need_scaled",
+                "overshoot_scaled",
+                "time_multiplier",
                 "current_score",
                 "previous_score",
                 "score_delta",
                 "score_delta_weight",
                 "score_delta_bonus",
+                "need_weight",
+                "need_penalty",
+                "shortfall_weight",
+                "shortfall_penalty_term",
+                "overshoot_weight",
+                "overshoot_penalty",
+                "disposal_weight",
+                "disposal_penalty_term",
+                "productivity_weight",
+                "productivity_proxy",
+                "productivity_bonus",
+                "shaping_reward",
                 "base_reward",
                 "final_reward",
                 "current_disposal_cost",
@@ -718,7 +856,9 @@ class MyRewardFunction(DefaultRewardFunction):
         base_reward: float,
         score_delta: float,
         score_delta_bonus: float,
+        shaping_reward: float,
         final_reward: float,
+        reward_terms: dict[str, float | str],
     ) -> None:
         """Write one reward component row."""
         if self.reward_log_writer is None:
@@ -731,23 +871,39 @@ class MyRewardFunction(DefaultRewardFunction):
                 "pid": os.getpid(),
                 "context": type(self.context).__name__,
                 "current_step": _safe_float(getattr(awi, "current_step", 0)),
-                "relative_time": _safe_float(getattr(awi, "relative_time", 0.0)),
+                "relative_time": reward_terms["relative_time"],
                 "n_steps": _safe_float(getattr(awi, "n_steps", 0)),
-                "needed_sales": _safe_float(getattr(awi, "needed_sales", 0)),
-                "needed_supplies": _safe_float(getattr(awi, "needed_supplies", 0)),
+                "active_need_type": reward_terms["active_need_type"],
+                "active_need": reward_terms["active_need"],
+                "needed_sales": reward_terms["needed_sales"],
+                "needed_supplies": reward_terms["needed_supplies"],
+                "unmet_need": reward_terms["unmet_need"],
+                "overshoot": reward_terms["overshoot"],
+                "need_scale": reward_terms["need_scale"],
+                "unmet_need_scaled": reward_terms["unmet_need_scaled"],
+                "overshoot_scaled": reward_terms["overshoot_scaled"],
+                "time_multiplier": reward_terms["time_multiplier"],
                 "current_score": current_score,
                 "previous_score": previous_score,
                 "score_delta": score_delta,
                 "score_delta_weight": self.score_delta_weight,
                 "score_delta_bonus": score_delta_bonus,
+                "need_weight": self.need_weight,
+                "need_penalty": reward_terms["need_penalty"],
+                "shortfall_weight": self.shortfall_weight,
+                "shortfall_penalty_term": reward_terms["shortfall_penalty_term"],
+                "overshoot_weight": self.overshoot_weight,
+                "overshoot_penalty": reward_terms["overshoot_penalty"],
+                "disposal_weight": self.disposal_weight,
+                "disposal_penalty_term": reward_terms["disposal_penalty_term"],
+                "productivity_weight": self.productivity_weight,
+                "productivity_proxy": reward_terms["productivity_proxy"],
+                "productivity_bonus": reward_terms["productivity_bonus"],
+                "shaping_reward": shaping_reward,
                 "base_reward": base_reward,
                 "final_reward": final_reward,
-                "current_disposal_cost": _safe_float(
-                    getattr(awi, "current_disposal_cost", 0.0)
-                ),
-                "current_shortfall_penalty": _safe_float(
-                    getattr(awi, "current_shortfall_penalty", 0.0)
-                ),
+                "current_disposal_cost": reward_terms["current_disposal_cost"],
+                "current_shortfall_penalty": reward_terms["current_shortfall_penalty"],
                 "current_storage_cost": _safe_float(
                     getattr(awi, "current_storage_cost", 0.0)
                 ),
@@ -910,8 +1066,17 @@ def main(ntrain: int = NTRAINING):
     print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
     print(f"eval_freq: {os.environ.get('EVAL_FREQ', f'{max(ntrain // 5, 1)}')}")
     print(f"n_eval_episodes: {os.environ.get('N_EVAL_EPISODES', '3')}")
+    print(f"reward_score_delta_weight: {os.environ.get('REWARD_SCORE_DELTA_WEIGHT', '0.1')}")
+    print(f"reward_need_weight: {os.environ.get('REWARD_NEED_WEIGHT', '0.0')}")
+    print(f"reward_shortfall_weight: {os.environ.get('REWARD_SHORTFALL_WEIGHT', '0.0')}")
+    print(f"reward_overshoot_weight: {os.environ.get('REWARD_OVERSHOOT_WEIGHT', '0.0')}")
+    print(f"reward_disposal_weight: {os.environ.get('REWARD_DISPOSAL_WEIGHT', '0.0')}")
+    print(f"reward_productivity_weight: {os.environ.get('REWARD_PRODUCTIVITY_WEIGHT', '0.0')}")
+    print(f"reward_time_pressure_weight: {os.environ.get('REWARD_TIME_PRESSURE_WEIGHT', '1.0')}")
+    print(f"reward_need_normalizer: {os.environ.get('REWARD_NEED_NORMALIZER', '0.0')}")
     print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
     print(f"rl_agent_code: {_rl_agent_code()}")
+    
 
     queue = Queue()
 
