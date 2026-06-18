@@ -163,8 +163,12 @@ def main(ntrain: int = NTRAINING):
         total_cores = int(slurm_cpus)
     else:
         total_cores = os.cpu_count() or 1
-    #n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
-    n_parallel = 2
+
+    # n_parallel for the case of training on HPC
+    n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
+    # n_parallel for the case of training on the local machine
+    #n_parallel = 2
+
     params = get_parallelization_params(n_models_parallel=n_parallel)
 
     queue = Queue()

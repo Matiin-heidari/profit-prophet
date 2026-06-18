@@ -56,8 +56,10 @@ def get_parallelization_params(n_models_parallel: int = 1) -> dict:
     usable_cores = max(1, total_cores - 1)
     cores_per_model = max(1, usable_cores // n_models_parallel)
 
-    #n_envs = min(cores_per_model, 8)
-    n_envs = 2
+    # n_envs for the case of running on HPC
+    n_envs = min(cores_per_model, 8)
+    # in case of running on the local machine
+    #n_envs = 2
 
     print(
         f"Detected {total_cores} cores from {source} → "
