@@ -86,7 +86,7 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
     context = make_context(context_name)
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
-        observation_manager=MyObservationManager(context=context, continuous=True),  # type: ignore
+        observation_manager=MyObservationManager(context=context, continuous=True, n_past_received_offers=3),  # type: ignore
         reward_function=MyRewardFunction(context=context),
         context=context,
         extra_checks=False,
@@ -108,7 +108,7 @@ def try_a_model(
         params=(
             dict(
                 models=[model_wrapper(model)],
-                observation_managers=[obs_type(context, continuous=True)],
+                observation_managers=[obs_type(context, continuous=True, n_past_received_offers=3)],
                 action_managers=[FlexibleActionManager(context)],
             ),
         ),

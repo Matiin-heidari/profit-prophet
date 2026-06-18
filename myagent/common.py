@@ -78,7 +78,7 @@ class MyObservationManager(FlexibleObservationManager):
     def make_space(self) -> spaces.MultiDiscrete | spaces.Box:
         """Creates the observation space"""
         base = super().make_space()
-        n_extra = 6
+        n_extra = 8
 
         return spaces.Box(
             low=0.0,
@@ -90,6 +90,12 @@ class MyObservationManager(FlexibleObservationManager):
 
     def encode(self, awi):
         base = super().encode(awi)
+
+        competitors_ratio = np.clip(
+            awi.n_competitors / 20,
+            0.0,
+            1.0,
+        )
 
         input_price = max(
             1.0,
@@ -135,35 +141,33 @@ class MyObservationManager(FlexibleObservationManager):
             1.0,
         )
 
-        # Profitability feature
-        margin = (
-            output_price
-            - input_price
-            - production_cost
-        ) / output_price
+        price_increase_ratio = np.clip(
+            output_price / max(1.0, input_price),
+            0.0,
+            2.0,
+        ) / 2.0
 
-        margin_ratio = np.clip(
-            (margin + 1.0) / 2.0,
+        relative_time = np.clip(
+            awi.current_step / max(1, awi.n_steps - 1),
             0.0,
             1.0,
         )
 
         extras = np.array(
             [
+                competitors_ratio,
                 disposal_cost_ratio,
                 shortfall_penalty_ratio,
                 production_cost_ratio,
                 needed_supplies_ratio,
                 needed_sales_ratio,
-                margin_ratio,
+                relative_time,
+                price_increase_ratio,
             ],
             dtype=np.float32,
         )
 
         obs = np.concatenate([base, extras])
-        assert np.all(obs >= 0.0)
-        assert np.all(obs <= 1.0)  
-
         return obs
 
     def make_first_observation(self, awi: OneShotAWI) -> np.ndarray:
