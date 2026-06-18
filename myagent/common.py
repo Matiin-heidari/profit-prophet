@@ -1,5 +1,5 @@
 # exports the name of the training algorithm
-from email.mime import base
+import os
 from pathlib import Path
 
 import numpy as np
@@ -7,23 +7,70 @@ from gymnasium import spaces
 from negmas.outcomes import Outcome
 from scml.oneshot.rl.observation import FlexibleObservationManager
 from scml.oneshot.awi import OneShotAWI
-from scml.oneshot.context import GeneralContext, SupplierContext, ConsumerContext
-from stable_baselines3 import A2C
+from scml.oneshot.context import GeneralContext, StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext, StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext
+from stable_baselines3 import A2C, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 
-TrainingAlgorithm: type[BaseAlgorithm] = A2C
+TrainingAlgorithm: type[BaseAlgorithm] = PPO
 """The algorithm used for training. You can use any stable_baselines3 algorithm or develop your own"""
 
 MODEL_PATH = Path(__file__).parent / "models" / "mymodel"
 """The path in which train.py saves the trained model and from which myagent.py loads it"""
 
+CONTEXTS = [
+        "StrongSupplierContext",
+        "BalancedSupplierContext",
+        "WeakSupplierContext",
+        "StrongConsumerContext",
+        "BalancedConsumerContext",
+        "WeakConsumerContext"
+    ]
+"""
+The possible contexts for which we train the models.
+For example StrongSupplierContext is a context in which the amount of consumers
+is high in comparison to the number of competitors.
+"""
 
-def make_context(as_supplier: bool) -> GeneralContext:
-    """Generates a context as a supplier or as a consumer"""
-    if as_supplier:
-        return SupplierContext()
 
-    return ConsumerContext()
+def make_context(context_name: str) -> GeneralContext:
+    """Generates a context based on the given string"""
+    match context_name:
+        case "StrongSupplierContext": return StrongSupplierContext()
+        case "BalancedSupplierContext": return BalancedSupplierContext()
+        case "WeakSupplierContext": return WeakSupplierContext()
+        case "StrongConsumerContext": return StrongConsumerContext()
+        case "BalancedConsumerContext": return BalancedConsumerContext()
+        case "WeakConsumerContext": return WeakConsumerContext()
+        case _: return GeneralContext()
+    
+def get_parallelization_params(n_models_parallel: int = 1) -> dict:
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+
+    if slurm_cpus:
+        total_cores = int(slurm_cpus)
+        source = "SLURM_CPUS_PER_TASK"
+    else:
+        total_cores = os.cpu_count() or 1
+        source = "os.cpu_count()"
+
+    usable_cores = max(1, total_cores - 1)
+    cores_per_model = max(1, usable_cores // n_models_parallel)
+
+    # n_envs for the case of running on HPC
+    n_envs = min(cores_per_model, 8)
+    # in case of running on the local machine
+    #n_envs = 2
+
+    print(
+        f"Detected {total_cores} cores from {source} → "
+        f"using {n_envs} envs per model "
+        f"({n_models_parallel} model(s) training in parallel)"
+    )
+
+    return {
+        "n_envs": n_envs,
+        "n_models_parallel": n_models_parallel,
+    }
 
 
 class MyObservationManager(FlexibleObservationManager):
@@ -112,11 +159,6 @@ class MyObservationManager(FlexibleObservationManager):
             ],
             dtype=np.float32,
         )
-
-        print("base max =", base.max())
-        print("extras max =", extras.max())
-        print(self.continuous)
-        print(type(super().make_space()))
 
         obs = np.concatenate([base, extras])
         assert np.all(obs >= 0.0)

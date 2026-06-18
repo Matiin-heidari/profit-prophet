@@ -7,11 +7,13 @@ This code is free to use or update given that proper attribution is given to
 the authors and the ANAC 2024 SCML competition.
 """
 
+from pathlib import Path
+
 from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.common import model_wrapper
 
-from .common import MODEL_PATH, MyObservationManager, TrainingAlgorithm, make_context
+from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, make_context
 
 # used to repeat the response to every negotiator.
 
@@ -25,26 +27,26 @@ class MyAgent(OneShotRLAgent):
     def __init__(self, *args, **kwargs):
         # get full path to models (supplier and consumer models).
         base_name = MODEL_PATH.name
-        self.paths = [
-            MODEL_PATH.parent / f"{base_name}_supplier",
-            MODEL_PATH.parent / f"{base_name}_consumer",
-        ]
+        self.paths: list[Path] = []
+        observation_managers = []
+        action_managers = []
+
+        for context_name in CONTEXTS:
+            self.paths.append(MODEL_PATH.parent / f"{base_name}{context_name}")
+            context = make_context(context_name)
+            observation_managers.append(MyObservationManager(context, continuous=True))
+            action_managers.append(FlexibleActionManager(context))
+
+
         models = tuple(model_wrapper(TrainingAlgorithm.load(_)) for _ in self.paths)
-        contexts = (make_context(as_supplier=True), make_context(as_supplier=False))
         # update keyword arguments
         kwargs.update(
             dict(
                 # load models from MODEL_PATH
                 models=models,
                 # create corresponding observation managers
-                observation_managers=(
-                    MyObservationManager(context=contexts[0], continuous=True),
-                    MyObservationManager(context=contexts[1], continuous=True),
-                ),
-                action_managers=(
-                    FlexibleActionManager(context=contexts[0]),
-                    FlexibleActionManager(context=contexts[1]),
-                ),
+                observation_managers = observation_managers,
+                action_managers = action_managers
             )
         )
         # Initialize the base OneShotRLAgent with model paths and observation managers.
