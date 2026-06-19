@@ -1,7 +1,8 @@
 # trains an RL model
 import atexit
 import csv
-import os, json
+import logging
+import os
 from multiprocessing import Process, Queue
 from typing import Any
 
@@ -9,20 +10,17 @@ import numpy as np
 from negmas.sao import SAOResponse, ResponseType
 from rich import print
 from scml.oneshot.awi import OneShotAWI
-from scml.oneshot.context import GeneralContext
+from scml.oneshot.context import GeneralContext, StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext, StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext
 from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
 from scml.oneshot.rl.env import OneShotEnv
-from scml.oneshot.rl.reward import DefaultRewardFunction
-from scml.oneshot.context import GeneralContext, StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext, StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext
 from scml.oneshot.rl.observation import FlexibleObservationManager
+from scml.oneshot.rl.reward import DefaultRewardFunction
 
 from tqdm import tqdm
-from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
-from tqdm import tqdm
 
 from .common import (
     MODEL_PATH,
@@ -332,14 +330,6 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
             _add_my_agent_stat_metrics(metrics, stats, my_agent_ids, key)
 
     return metrics
-
-from multiprocessing import Process, Queue
-import numpy as np
-
-# sys.path.append(str(Path(__file__).parent))
-from .common import MODEL_PATH, CONTEXTS, TrainingAlgorithm, get_parallelization_params, make_context
-
-NTRAINING = 200000  # number of training steps
 
 
 _UNIT_PRICE_IDX = 2
@@ -946,14 +936,14 @@ class MyRewardFunction(DefaultRewardFunction):
 
         reward_terms = self._calculate_reward_terms(awi)
 
-        shaping_reward = (
+        shaping_reward = ( 
             score_delta_bonus
-            + reward_terms["need_penalty"]
-            + reward_terms["shortfall_penalty_term"]
-            + reward_terms["overshoot_penalty"]
-            + reward_terms["disposal_penalty_term"]
+            + reward_terms["need_penalty"] # type: ignore
+            + reward_terms["shortfall_penalty_term"] # type: ignore
+            + reward_terms["overshoot_penalty"] # type: ignore
+            + reward_terms["disposal_penalty_term"] # type: ignore
             + reward_terms["productivity_bonus"]
-        )
+        )  # type: ignore
 
         final_reward = base_reward + shaping_reward
 
@@ -1213,7 +1203,7 @@ class MyRewardFunction(DefaultRewardFunction):
         self.reward_log_rows_since_flush += 1
 
         if self.reward_log_rows_since_flush >= self.reward_log_flush_every:
-            self.reward_log_file.flush()
+            self.reward_log_file.flush()  # type: ignore
             self.reward_log_rows_since_flush = 0
 
     def _summarize_action(self, action: dict[str, SAOResponse]) -> dict[str, float]:
@@ -1247,11 +1237,6 @@ class MyRewardFunction(DefaultRewardFunction):
 
         return counts
 
-
-def make_env(context_name) -> OneShotEnv:
-    """Create a training environment for one context."""
-
-        return base_reward + 0.1 * score_delta
 
 def dump_object(obj):
     data = {}
@@ -1300,61 +1285,10 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
         observation_manager=MyObservationManager(context=context, continuous=True),  # type: ignore
-        reward_function=MyRewardFunction(context=context),
+        reward_function=make_reward_function(context=context),
         context=context,
         extra_checks=False,
     )
-
-
-def evaluate_model(model, context_name: str) -> dict:
-    """Runs a single simulation with one agent controlled with the given model. Similar to try_a_model but without progress output."""
-    context = make_context(context_name)
-    world, agents = context.generate(
-        types=(OneShotRLAgent,),
-        params=(
-            dict(
-                models=[model_wrapper(model)],
-                observation_managers=[FlexibleObservationManager(context)],
-                action_managers=[FlexibleActionManager(context)],
-            ),
-        ),
-    )
-
-    world.run()
-
-    agent_id = agents[0].id
-
-    result = {}
-
-    all_scores = world.scores()
-    opponent_scores = [v for k, v in all_scores.items() if k != agent_id]
-
-    result["score"] = all_scores[agent_id]
-    result["score_vs_mean_opponent"] = all_scores[agent_id] - float(np.mean(opponent_scores)) if opponent_scores else float("nan")
-    result["score_rank"] = sorted(all_scores.values(), reverse=True).index(all_scores[agent_id]) + 1
-    result["bankrupt"] = world.is_bankrupt[agent_id]
-    result["shortfall_penalty"] = sum(world.stats[f"shortfall_penalty_{agent_id}"])
-    result["shortfall_quantity"] = sum(world.stats[f"shortfall_quantity_{agent_id}"])
-    result["disposal_cost"] = sum(world.stats[f"disposal_cost_{agent_id}"])
-    result["productivity"] = float(np.mean(world.stats[f"productivity_{agent_id}"]))
-    result["n_negotiation_successful"] = sum(world.stats["n_negotiation_successful"])
-    result["n_negotiation_failed"] = sum(world.stats["n_negotiation_failed"])
-    result["n_negotiation_rounds_successful"] = sum(world.stats["n_negotiation_rounds_successful"])
-    result["n_negotiation_rounds_failed"] = sum(world.stats["n_negotiation_rounds_failed"])
-    result["n_contracts_nullified"] = sum(world.stats["n_contracts_nullified_now"])
-    result["activity_level"] = float(np.mean(world.stats["activity_level"]))
-    result["neg_requests_received"] = world.neg_requests_received[agent_id]
-    result["neg_requests_rejected"] = world.neg_requests_rejected[agent_id]
-    result["neg_requests_sent"] = world.neg_requests_sent[agent_id]
-    result["negs_initiated"] = world.negs_initiated[agent_id]
-    result["negs_failed"] = world.negs_failed[agent_id]
-    received = world.neg_requests_received[agent_id]
-    failed = world.negs_failed[agent_id]
-    result["agent_agreement_rate"] = (received - failed) / received if received > 0 else float("nan")
-    result["welfare"] = world.welfare()
-    result["relative_welfare"] = world.relative_welfare()
-
-    return result
 
 
 def try_a_model(
@@ -1380,39 +1314,34 @@ def try_a_model(
 
 def try_a_trained_model(context_name: str):
     """Runs a simulation with one agent controlled by the already trained model for the given context"""
-    path = MODEL_PATH.parent / f"{MODEL_PATH.name}{BalancedSupplierContext}"
+    path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
     model = TrainingAlgorithm.load(path)
-    obs_type = FlexibleObservationManager
-    # Create a world context compatibly with the model
     context = make_context(context_name)
-    # sample a world and the RL agents (always one in this case)
     world, agent = context.generate(
         types=(OneShotRLAgent,),
         params=(
             dict(
                 models=[model_wrapper(model)],
-                observation_managers=[obs_type(context)],
+                observation_managers=[MyObservationManager(context, continuous=True)],
                 action_managers=[FlexibleActionManager(context)],
             ),
         ),
     )
 
-    print(f"Assigned Agent: {agent[0].name}, {agent[0].id}")
-    world_agents = world.agents
-    print(world_agents)
+    aid = agent[0].id
+    print(f"Assigned Agent: {agent[0].name}, {aid}")
     world.run_with_progress()
-    
+
     scores = world.scores()
     print(scores)
-    rl_score = world.scores()[agent[0].name]
-    print(f"Our Score: {rl_score}")
+    print(f"Our Score: {scores[aid]}")
     print(f"Agreement: {world.agreement_rate}")
-    print(f"Bankrupt: {world.is_bankrupt[agent[0].name]}")
-    print(f"neg_requests_received: {world.neg_requests_received[agent[0].name]}")
-    print(f"neg_requests_rejected: {world.neg_requests_rejected[agent[0].name]}")
-    print(f"neg_requests_sent: {world.neg_requests_sent[agent[0].name]}")
-    print(f"negs_initiated: {world.negs_initiated[agent[0].name]}")
-    print(f"negs_failed: {world.negs_failed[agent[0].name]}")
+    print(f"Bankrupt: {world.is_bankrupt[aid]}")
+    print(f"neg_requests_received: {world.neg_requests_received[aid]}")
+    print(f"neg_requests_rejected: {world.neg_requests_rejected[aid]}")
+    print(f"neg_requests_sent: {world.neg_requests_sent[aid]}")
+    print(f"negs_initiated: {world.negs_initiated[aid]}")
+    print(f"negs_failed: {world.negs_failed[aid]}")
 
 
     return world
@@ -1462,7 +1391,7 @@ def train_one(context_name, ntrain, params, queue):
             verbose=0,
             policy_kwargs=policy_kwargs,
             tensorboard_log=f"./tensorboard_logs/{run_name}/{context_name}",
-        )
+        ) # type: ignore learning_rate must be passed by the algorithm itself
 
         model.learn(
             total_timesteps=ntrain,
