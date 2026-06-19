@@ -1,27 +1,39 @@
 #!/bin/bash
-#SBATCH --job-name=train_scml
+#SBATCH --job-name=scml_train
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 #SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=96G
 #SBATCH --partition=kisski
-#SBATCH --gres=gpu:1
 
 module load miniforge3/24.3.0-0
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate $PROJECT_DIR/envs/agentic
 
-cd $PROJECT_DIR/profit-prophet-toby
+cd "$SLURM_SUBMIT_DIR"
 
 echo "=== Host ==="
 hostname
+
 echo "=== Date ==="
 date
+
 echo "=== Python ==="
 which python
 python --version
-echo "=== Torch/CUDA ==="
+
+echo "=== Git ==="
+git rev-parse --short HEAD
+git branch --show-current
+
+echo "=== Run config ==="
+echo "RUN_NAME=${RUN_NAME:-default}"
+echo "TRAIN_CONTEXTS=${TRAIN_CONTEXTS:-all}"
+echo "EVAL_FREQ=${EVAL_FREQ:-auto}"
+echo "N_EVAL_EPISODES=${N_EVAL_EPISODES:-3}"
+
+echo "=== Torch ==="
 python - <<'PY'
 import torch
 print("torch:", torch.__version__)

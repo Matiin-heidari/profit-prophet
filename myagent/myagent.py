@@ -9,48 +9,52 @@ the authors and the ANAC 2024 SCML competition.
 
 from pathlib import Path
 
-from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.action import FlexibleActionManager
+from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
 from scml.oneshot.rl.observation import FlexibleObservationManager
 
-from .common import MODEL_PATH, CONTEXTS, MyObservationManager, TrainingAlgorithm, make_context
-
-# used to repeat the response to every negotiator.
+from .common import (
+    ALL_CONTEXTS,
+    MODEL_PATH,
+    MyObservationManager,
+    TrainingAlgorithm,
+    make_context,
+)
 
 
 class MyAgent(OneShotRLAgent):
-    """
-    This is the only class you *need* to implement. The current skeleton simply loads a single model
-    that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
-    """
+    """RL agent that loads one trained model per context."""
 
     def __init__(self, *args, **kwargs):
-        # get full path to models (supplier and consumer models).
         base_name = MODEL_PATH.name
         self.paths: list[Path] = []
+
         observation_managers = []
         action_managers = []
 
-        for context_name in CONTEXTS:
-            self.paths.append(MODEL_PATH.parent / f"{base_name}{context_name}")
+        # The runtime agent should always load all supported contexts.
+        for context_name in ALL_CONTEXTS:
+            model_path = MODEL_PATH.parent / f"{base_name}{context_name}"
+            self.paths.append(model_path)
+
             context = make_context(context_name)
-            observation_managers.append(FlexibleObservationManager(context))
+            observation_managers.append(MyObservationManager(context, continuous=True))
             action_managers.append(FlexibleActionManager(context))
 
+        models = tuple(
+            model_wrapper(TrainingAlgorithm.load(path))
+            for path in self.paths
+        )
 
-        models = tuple(model_wrapper(TrainingAlgorithm.load(_)) for _ in self.paths)
-        # update keyword arguments
         kwargs.update(
             dict(
-                # load models from MODEL_PATH
                 models=models,
-                # create corresponding observation managers
-                observation_managers = observation_managers,
-                action_managers = action_managers
+                observation_managers=observation_managers,
+                action_managers=action_managers,
             )
         )
-        # Initialize the base OneShotRLAgent with model paths and observation managers.
+
         super().__init__(*args, **kwargs)
 
 

@@ -1,12 +1,15 @@
 # trains an RL model
-#
-import logging
+import atexit
+import csv
 import os, json
+from multiprocessing import Process, Queue
 from typing import Any
 
+import numpy as np
 from negmas.sao import SAOResponse, ResponseType
 from rich import print
 from scml.oneshot.awi import OneShotAWI
+from scml.oneshot.context import GeneralContext
 from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
@@ -18,6 +21,318 @@ from scml.oneshot.rl.observation import FlexibleObservationManager
 from tqdm import tqdm
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from tqdm import tqdm
+
+from .common import (
+    MODEL_PATH,
+    CONTEXTS,
+    MyObservationManager,
+    TrainingAlgorithm,
+    get_parallelization_params,
+    make_context,
+)
+
+NTRAINING = 300000  # number of training steps
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Convert a value to finite float."""
+    try:
+        if value is None:
+            return default
+
+        value_float = float(value)
+
+        if not np.isfinite(value_float):
+            return default
+
+        return value_float
+
+    except (TypeError, ValueError):
+        return default
+
+
+def _numeric_values(value: Any) -> list[float]:
+    """Convert scalar/list/array values to finite floats."""
+    if value is None:
+        return []
+
+    if isinstance(value, (list, tuple, np.ndarray)):
+        raw_values = list(value)
+    elif hasattr(value, "tolist"):
+        raw_values = value.tolist()
+    elif hasattr(value, "to_list"):
+        raw_values = value.to_list()
+    elif hasattr(value, "values"):
+        try:
+            raw_values = list(value.values)
+        except Exception:
+            raw_values = [value]
+    else:
+        raw_values = [value]
+
+    values = []
+
+    for raw_value in raw_values:
+        try:
+            value_float = float(raw_value)
+
+            if np.isfinite(value_float):
+                values.append(value_float)
+
+        except (TypeError, ValueError):
+            continue
+
+    return values
+
+
+def _mean_numeric(values: list[Any], default: float = 0.0) -> float:
+    """Average numeric values only."""
+    numeric_values = _numeric_values(values)
+
+    if not numeric_values:
+        return default
+
+    return float(np.mean(numeric_values))
+
+
+def _safe_numeric_summary(value: Any, default: float = 0.0) -> float:
+    """Summarize scalar/list/array values as a mean."""
+    values = _numeric_values(value)
+
+    if not values:
+        return default
+
+    return float(np.mean(values))
+
+
+def _extract_world_stat(world: Any, key: str) -> float | None:
+    """Read optional world statistics."""
+    for attr_name in ("stats", "statistics"):
+        stats = getattr(world, attr_name, None)
+
+        if isinstance(stats, dict) and key in stats:
+            return _safe_numeric_summary(stats[key])
+
+    return None
+
+
+def _metric_safe_name(name: str) -> str:
+    """Make names safe for TensorBoard tags."""
+    safe_chars = []
+
+    for char in name:
+        if char.isalnum() or char in ("_", "-"):
+            safe_chars.append(char)
+        else:
+            safe_chars.append("_")
+
+    return "".join(safe_chars) or "unknown"
+
+
+def _agent_code(agent_id: str) -> str:
+    """Extract the short SCML agent code from an agent id."""
+    base = agent_id.split("@", 1)[0]
+    return base.lstrip("0123456789")
+
+
+def _rl_agent_code() -> str:
+    """Return the score-code used for the RL agent."""
+    return os.environ.get("RL_AGENT_CODE", "On")
+
+
+def _is_rl_agent_score_key(agent_id: str) -> bool:
+    """Detect the RL agent in world.scores()."""
+    return _agent_code(agent_id) == _rl_agent_code()
+
+
+def _rank_of_agents(scores: dict[str, float], agent_ids: list[str]) -> float:
+    """Return the best 1-based rank of selected agents."""
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    ranks = {agent_id: rank for rank, (agent_id, _) in enumerate(ranked, start=1)}
+
+    selected_ranks = [
+        ranks[agent_id]
+        for agent_id in agent_ids
+        if agent_id in ranks
+    ]
+
+    if not selected_ranks:
+        return float(len(scores))
+
+    return float(min(selected_ranks))
+
+
+def _add_series_metrics(
+    metrics: dict[str, float],
+    name: str,
+    value: Any,
+) -> None:
+    """Add summary metrics for a numeric series."""
+    values = _numeric_values(value)
+
+    if not values:
+        return
+
+    metrics[f"{name}_mean"] = float(np.mean(values))
+    metrics[f"{name}_last"] = float(values[-1])
+    metrics[f"{name}_min"] = float(np.min(values))
+    metrics[f"{name}_max"] = float(np.max(values))
+    metrics[f"{name}_sum"] = float(np.sum(values))
+    metrics[f"{name}_count"] = float(len(values))
+
+
+def _add_my_agent_stat_metrics(
+    metrics: dict[str, float],
+    stats: dict[str, Any],
+    agent_ids: list[str],
+    key: str,
+) -> None:
+    """Aggregate a statistic over all RL-agent ids."""
+    values = []
+
+    for agent_id in agent_ids:
+        stat_key = f"{key}_{agent_id}"
+
+        if stat_key in stats:
+            values.extend(_numeric_values(stats[stat_key]))
+
+    if values:
+        _add_series_metrics(metrics, f"my/{key}", values)
+
+
+def evaluate_model(model, context_name: str) -> dict[str, float]:
+    """Run one evaluation world and return loggable metrics."""
+    context = make_context(context_name)
+
+    world, _ = context.generate(
+        types=(OneShotRLAgent,),
+        params=(
+            dict(
+                models=[model_wrapper(model)],
+                observation_managers=[MyObservationManager(context, continuous=True)],
+                action_managers=[FlexibleActionManager(context)],
+            ),
+        ),
+    )
+
+    if hasattr(world, "run"):
+        world.run()
+    else:
+        world.run_with_progress()
+
+    metrics: dict[str, float] = {}
+    scores: dict[str, float] = {}
+    my_agent_ids: list[str] = []
+
+    if hasattr(world, "scores"):
+        raw_scores = world.scores()
+        scores = {
+            str(agent_id): float(score)
+            for agent_id, score in raw_scores.items()
+            if np.isfinite(float(score))
+        }
+
+        my_agent_ids = [
+            agent_id
+            for agent_id in scores
+            if _is_rl_agent_score_key(agent_id)
+        ]
+
+        opponent_ids = [
+            agent_id
+            for agent_id in scores
+            if agent_id not in my_agent_ids
+        ]
+
+        my_scores = [scores[agent_id] for agent_id in my_agent_ids]
+        opponent_scores = [scores[agent_id] for agent_id in opponent_ids]
+
+        metrics["n_agents"] = float(len(scores))
+        metrics["n_rl_agents"] = float(len(my_agent_ids))
+        metrics["world_score_mean"] = _mean_numeric(list(scores.values()))
+
+        if scores:
+            metrics["top_score"] = float(max(scores.values()))
+            metrics["bottom_score"] = float(min(scores.values()))
+
+        if my_scores:
+            my_score = _mean_numeric(my_scores)
+            metrics["score"] = my_score
+            metrics["my_score"] = my_score
+            metrics["my_rank"] = _rank_of_agents(scores, my_agent_ids)
+
+        if opponent_scores:
+            opponent_score = _mean_numeric(opponent_scores)
+            metrics["opponent_score_mean"] = opponent_score
+            metrics["best_opponent_score"] = float(max(opponent_scores))
+            metrics["worst_opponent_score"] = float(min(opponent_scores))
+
+            if my_scores:
+                metrics["score_gap"] = metrics["my_score"] - opponent_score
+                metrics["score_gap_vs_best_opponent"] = (
+                    metrics["my_score"] - metrics["best_opponent_score"]
+                )
+
+        opponent_scores_by_code: dict[str, list[float]] = {}
+
+        for opponent_id in opponent_ids:
+            code = _metric_safe_name(_agent_code(opponent_id))
+            opponent_scores_by_code.setdefault(code, []).append(scores[opponent_id])
+
+        for code, typed_scores in opponent_scores_by_code.items():
+            typed_score_mean = _mean_numeric(typed_scores)
+
+            metrics[f"opponent/{code}_score_mean"] = typed_score_mean
+            metrics[f"opponent/{code}_count"] = float(len(typed_scores))
+
+            if my_scores:
+                metrics[f"score_gap_vs/{code}"] = metrics["my_score"] - typed_score_mean
+
+    stats = getattr(world, "stats", None)
+
+    if isinstance(stats, dict):
+        # World-level metrics.
+        for key in (
+            "n_negotiation_successful",
+            "n_negotiation_failed",
+            "n_negotiation_rounds_successful",
+            "n_negotiation_rounds_failed",
+            "n_contracts_signed",
+            "n_contracts_concluded",
+            "n_contracts_executed",
+            "n_contracts_cancelled",
+            "n_contracts_dropped",
+            "n_contracts_nullified",
+            "agreement_rate",
+            "agreement_fraction",
+            "contract_execution_fraction",
+            "productivity",
+            "welfare",
+            "relative_welfare",
+        ):
+            if key in stats:
+                _add_series_metrics(metrics, f"world/{key}", stats[key])
+
+        # RL-agent-specific metrics.
+        for key in (
+            "score",
+            "balance",
+            "bankrupt",
+            "productivity",
+            "shortfall_quantity",
+            "shortfall_penalty",
+            "storage_cost",
+            "disposal_cost",
+            "inventory_penalized",
+            "inventory_input",
+            "inventory_output",
+        ):
+            _add_my_agent_stat_metrics(metrics, stats, my_agent_ids, key)
+
+    return metrics
+
 from multiprocessing import Process, Queue
 import numpy as np
 
@@ -308,6 +623,8 @@ def make_reward_function(context: GeneralContext) -> _BaseReward:
     return reward_cls(context)
 
 class ProgressCallback(BaseCallback):
+    """Send training progress to the main process."""
+
     def __init__(self, queue: Queue, context_name: str):
         super().__init__()
         self.queue = queue
@@ -322,78 +639,617 @@ class ProgressCallback(BaseCallback):
 
 
 class EvaluationCallback(BaseCallback):
-    def __init__(self, context_name: str, eval_freq: int = 10_000, n_eval_episodes: int = 10):
+    """Log evaluation metrics to TensorBoard."""
+
+    def __init__(
+        self,
+        context_name: str,
+        eval_freq: int,
+        n_eval_episodes: int,
+    ):
         super().__init__()
         self.context_name = context_name
-        self.eval_freq = eval_freq
-        self.n_eval_episodes = n_eval_episodes
-
-    SCORE_KEYS = (
-        "score", "score_vs_mean_opponent", "score_rank"
-    )
-
-    AGENT_KEYS = (
-        "bankrupt",
-        "shortfall_penalty", "shortfall_quantity", "disposal_cost", "productivity",
-        "neg_requests_received", "neg_requests_rejected", "neg_requests_sent",
-        "negs_initiated", "negs_failed", "agent_agreement_rate",
-    )
-    WORLD_KEYS = (
-        "welfare", "relative_welfare",
-        "n_negotiation_successful", "n_negotiation_failed",
-        "n_negotiation_rounds_successful", "n_negotiation_rounds_failed",
-        "n_contracts_nullified", "activity_level",
-    )
+        self.eval_freq = max(1, eval_freq)
+        self.n_eval_episodes = max(1, n_eval_episodes)
+        self.last_eval_step = 0
 
     def _on_step(self) -> bool:
-        if self.num_timesteps % self.eval_freq == 0:
-            results = [evaluate_model(self.model, self.context_name)
-                       for _ in range(self.n_eval_episodes)]
-            
-            for key in self.SCORE_KEYS:
-                vals = [r[key] for r in results if r.get(key) is not None]
-                if vals:
-                    self.logger.record(f"_score/{key}", float(np.mean(vals)))
+        if self.num_timesteps - self.last_eval_step < self.eval_freq:
+            return True
 
-            for key in self.AGENT_KEYS:
-                vals = [r[key] for r in results if r.get(key) is not None]
-                if vals:
-                    self.logger.record(f"agent/{key}", float(np.mean(vals)))
+        self.last_eval_step = self.num_timesteps
 
-            for key in self.WORLD_KEYS:
-                vals = [r[key] for r in results if r.get(key) is not None]
-                if vals:
-                    self.logger.record(f"world/{key}", float(np.mean(vals)))
+        try:
+            results = [
+                evaluate_model(self.model, self.context_name)
+                for _ in range(self.n_eval_episodes)
+            ]
 
-            self.logger.dump(self.num_timesteps)
+            metric_names = sorted({key for result in results for key in result})
 
+            for metric_name in metric_names:
+                values = [
+                    float(result[metric_name])
+                    for result in results
+                    if metric_name in result and np.isfinite(float(result[metric_name]))
+                ]
+
+                if not values:
+                    continue
+
+                mean_value = float(np.mean(values))
+
+                self.logger.record(f"eval/{metric_name}", mean_value)
+                self.logger.record(f"eval/{metric_name}_mean", mean_value)
+                self.logger.record(f"eval/{metric_name}_std", float(np.std(values)))
+                self.logger.record(f"eval/{metric_name}_min", float(np.min(values)))
+                self.logger.record(f"eval/{metric_name}_max", float(np.max(values)))
+
+            self.logger.record("eval/failed", 0)
+
+        except Exception as e:
+            # Logging must not stop training.
+            self.logger.record("eval/failed", 1)
+            print(f"[eval failed] {self.context_name}: {e}")
+
+        self.logger.dump(self.num_timesteps)
         return True
 
 
+class TrainingDiagnosticsCallback(BaseCallback):
+    """Log interval-based observation, action and reward diagnostics."""
+
+    def __init__(self, log_freq: int):
+        super().__init__()
+        self.log_freq = max(1, log_freq)
+        self.last_log_step = 0
+
+        self.reward_buffer: list[float] = []
+        self.action_buffer: list[float] = []
+        self.done_buffer: list[float] = []
+
+    def _on_step(self) -> bool:
+        obs = self.locals.get("new_obs")
+        rewards = self.locals.get("rewards")
+        dones = self.locals.get("dones")
+        actions = self.locals.get("actions")
+
+        self._extend_buffer(self.reward_buffer, rewards)
+        self._extend_buffer(self.action_buffer, actions)
+        self._extend_buffer(self.done_buffer, dones)
+
+        if self.num_timesteps - self.last_log_step < self.log_freq:
+            return True
+
+        self.last_log_step = self.num_timesteps
+
+        # Snapshot diagnostics for the current observation.
+        self._log_array_snapshot("diagnostics/obs", obs, log_features=True)
+
+        # Interval diagnostics over all steps since the last log.
+        self._log_interval("diagnostics/reward_interval", self.reward_buffer, log_signs=True)
+        self._log_interval("diagnostics/action_interval", self.action_buffer)
+        self._log_interval("diagnostics/done_interval", self.done_buffer)
+
+        # Backward-compatible aliases for quick checks.
+        self._log_interval("diagnostics/reward", self.reward_buffer, log_signs=True)
+
+        if self.done_buffer:
+            done_array = np.asarray(self.done_buffer, dtype=np.float32)
+            self.logger.record("diagnostics/done_fraction", float(np.mean(done_array)))
+
+        self.reward_buffer.clear()
+        self.action_buffer.clear()
+        self.done_buffer.clear()
+
+        self.logger.dump(self.num_timesteps)
+        return True
+
+    def _extend_buffer(self, buffer: list[float], value: Any) -> None:
+        """Append finite numeric values to a buffer."""
+        if value is None:
+            return
+
+        try:
+            array = np.asarray(value, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return
+
+        finite_values = array[np.isfinite(array)]
+
+        if finite_values.size == 0:
+            return
+
+        buffer.extend(float(value) for value in finite_values)
+
+    def _log_interval(
+        self,
+        prefix: str,
+        values: list[float],
+        log_signs: bool = False,
+    ) -> None:
+        """Log summary statistics for an interval buffer."""
+        self.logger.record(f"{prefix}_count", float(len(values)))
+
+        if not values:
+            return
+
+        array = np.asarray(values, dtype=np.float32)
+        finite_array = array[np.isfinite(array)]
+
+        if finite_array.size == 0:
+            return
+
+        self.logger.record(f"{prefix}_mean", float(np.mean(finite_array)))
+        self.logger.record(f"{prefix}_std", float(np.std(finite_array)))
+        self.logger.record(f"{prefix}_min", float(np.min(finite_array)))
+        self.logger.record(f"{prefix}_max", float(np.max(finite_array)))
+        self.logger.record(f"{prefix}_sum", float(np.sum(finite_array)))
+        self.logger.record(f"{prefix}_abs_mean", float(np.mean(np.abs(finite_array))))
+
+        if log_signs:
+            eps = 1e-12
+
+            self.logger.record(
+                f"{prefix}_nonzero_fraction",
+                float(np.mean(np.abs(finite_array) > eps)),
+            )
+            self.logger.record(
+                f"{prefix}_zero_fraction",
+                float(np.mean(np.abs(finite_array) <= eps)),
+            )
+            self.logger.record(
+                f"{prefix}_positive_fraction",
+                float(np.mean(finite_array > eps)),
+            )
+            self.logger.record(
+                f"{prefix}_negative_fraction",
+                float(np.mean(finite_array < -eps)),
+            )
+
+    def _log_array_snapshot(
+        self,
+        prefix: str,
+        value: Any,
+        log_features: bool = False,
+    ) -> None:
+        """Log summary stats for the current array snapshot."""
+        if value is None:
+            return
+
+        try:
+            array = np.asarray(value, dtype=np.float32)
+        except (TypeError, ValueError):
+            return
+
+        if array.size == 0:
+            return
+
+        finite_mask = np.isfinite(array)
+        finite_values = array[finite_mask]
+
+        self.logger.record(f"{prefix}_nan_count", float(np.isnan(array).sum()))
+        self.logger.record(f"{prefix}_inf_count", float(np.isinf(array).sum()))
+
+        if finite_values.size == 0:
+            return
+
+        self.logger.record(f"{prefix}_mean", float(np.mean(finite_values)))
+        self.logger.record(f"{prefix}_std", float(np.std(finite_values)))
+        self.logger.record(f"{prefix}_min", float(np.min(finite_values)))
+        self.logger.record(f"{prefix}_max", float(np.max(finite_values)))
+
+        if prefix == "diagnostics/obs":
+            self.logger.record(
+                "diagnostics/obs_low_clip_fraction",
+                float(np.mean(finite_values <= 0.0)),
+            )
+            self.logger.record(
+                "diagnostics/obs_high_clip_fraction",
+                float(np.mean(finite_values >= 1.0)),
+            )
+
+        if not log_features:
+            return
+
+        if array.ndim != 2:
+            return
+
+        feature_means = np.nanmean(array, axis=0)
+        feature_stds = np.nanstd(array, axis=0)
+        feature_mins = np.nanmin(array, axis=0)
+        feature_maxs = np.nanmax(array, axis=0)
+
+        for idx, value_mean in enumerate(feature_means):
+            self.logger.record(
+                f"{prefix}_feature_{idx:02d}_mean",
+                _safe_float(value_mean),
+            )
+
+        for idx, value_std in enumerate(feature_stds):
+            self.logger.record(
+                f"{prefix}_feature_{idx:02d}_std",
+                _safe_float(value_std),
+            )
+
+        for idx, value_min in enumerate(feature_mins):
+            self.logger.record(
+                f"{prefix}_feature_{idx:02d}_min",
+                _safe_float(value_min),
+            )
+
+        for idx, value_max in enumerate(feature_maxs):
+            self.logger.record(
+                f"{prefix}_feature_{idx:02d}_max",
+                _safe_float(value_max),
+            )
+
+
 class MyRewardFunction(DefaultRewardFunction):
-    """Reward shaping using score improvement."""
+    """Reward shaping with configurable terms."""
 
     def __init__(self, context: GeneralContext):
         super().__init__()
         self.context = context
 
+        self.score_delta_weight = float(
+            os.environ.get("REWARD_SCORE_DELTA_WEIGHT", "0.1")
+        )
+        self.need_weight = float(
+            os.environ.get("REWARD_NEED_WEIGHT", "0.0")
+        )
+        self.shortfall_weight = float(
+            os.environ.get("REWARD_SHORTFALL_WEIGHT", "0.0")
+        )
+        self.overshoot_weight = float(
+            os.environ.get("REWARD_OVERSHOOT_WEIGHT", "0.0")
+        )
+        self.disposal_weight = float(
+            os.environ.get("REWARD_DISPOSAL_WEIGHT", "0.0")
+        )
+        self.productivity_weight = float(
+            os.environ.get("REWARD_PRODUCTIVITY_WEIGHT", "0.0")
+        )
+        self.time_pressure_weight = float(
+            os.environ.get("REWARD_TIME_PRESSURE_WEIGHT", "1.0")
+        )
+        self.need_normalizer = float(
+            os.environ.get("REWARD_NEED_NORMALIZER", "0.0")
+        )
+
+        self.log_reward_components = (
+            os.environ.get("LOG_REWARD_COMPONENTS", "1") != "0"
+        )
+
+        self.reward_log_file = None
+        self.reward_log_writer = None
+        self.reward_log_rows_since_flush = 0
+        self.reward_log_flush_every = int(
+            os.environ.get("REWARD_LOG_FLUSH_EVERY", "1000")
+        )
+
+        if self.log_reward_components:
+            self._open_reward_log()
+
+        atexit.register(self._close_reward_log)
+
     def before_action(self, awi: OneShotAWI) -> float:
         return float(getattr(awi, "current_score", 0.0))
 
     def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: float):
-        base_reward = super().__call__(awi, action, info)
-        """
-        snapshot = dump_object(awi)
-        if awi.current_offers != {}: print(f"Offers: {awi.current_offers}")
-        print(f"Lines: {awi.n_lines}")
-        print(f"Level:{awi.level} Total Sales:{awi.total_sales} ExInput: {awi.current_exogenous_input_quantity} Needed Sales: {awi.needed_sales}")
+        base_reward = _safe_float(super().__call__(awi, action, info))
 
-        with open("awi_dump.json", "w") as f:
-            json.dump(snapshot, f, indent=4, default=str)"""
-
-        previous_score = float(info or 0.0)
-        current_score = float(getattr(awi, "current_score", previous_score))
+        previous_score = _safe_float(info)
+        current_score = _safe_float(getattr(awi, "current_score", previous_score))
         score_delta = current_score - previous_score
+        score_delta_bonus = self.score_delta_weight * score_delta
+
+        reward_terms = self._calculate_reward_terms(awi)
+
+        shaping_reward = (
+            score_delta_bonus
+            + reward_terms["need_penalty"]
+            + reward_terms["shortfall_penalty_term"]
+            + reward_terms["overshoot_penalty"]
+            + reward_terms["disposal_penalty_term"]
+            + reward_terms["productivity_bonus"]
+        )
+
+        final_reward = base_reward + shaping_reward
+
+        if self.log_reward_components:
+            self._log_reward_components(
+                awi=awi,
+                action=action,
+                previous_score=previous_score,
+                current_score=current_score,
+                base_reward=base_reward,
+                score_delta=score_delta,
+                score_delta_bonus=score_delta_bonus,
+                shaping_reward=shaping_reward,
+                final_reward=final_reward,
+                reward_terms=reward_terms,
+            )
+
+        return final_reward
+
+    def _calculate_reward_terms(self, awi: OneShotAWI) -> dict[str, float | str]:
+        """Calculate configurable reward shaping terms."""
+        needed_sales = _safe_float(getattr(awi, "needed_sales", 0.0))
+        needed_supplies = _safe_float(getattr(awi, "needed_supplies", 0.0))
+
+        context_name = type(self.context).__name__
+
+        if "Supplier" in context_name:
+            active_need = needed_sales
+            active_need_type = "sales"
+        elif "Consumer" in context_name:
+            active_need = needed_supplies
+            active_need_type = "supplies"
+        else:
+            if abs(needed_sales) >= abs(needed_supplies):
+                active_need = needed_sales
+                active_need_type = "sales"
+            else:
+                active_need = needed_supplies
+                active_need_type = "supplies"
+
+        unmet_need = max(0.0, active_need)
+        overshoot = max(0.0, -active_need)
+
+        n_lines = max(1.0, _safe_float(getattr(awi, "n_lines", 1.0), default=1.0))
+
+        if self.need_normalizer > 0.0:
+            need_scale = self.need_normalizer
+        else:
+            need_scale = n_lines
+
+        unmet_need_scaled = unmet_need / max(1.0, need_scale)
+        overshoot_scaled = overshoot / max(1.0, need_scale)
+
+        relative_time = _safe_float(getattr(awi, "relative_time", 0.0))
+        time_multiplier = 1.0 + self.time_pressure_weight * relative_time
+
+        current_shortfall_penalty = _safe_float(
+            getattr(awi, "current_shortfall_penalty", 0.0)
+        )
+        current_disposal_cost = _safe_float(
+            getattr(awi, "current_disposal_cost", 0.0)
+        )
+
+        need_penalty = -self.need_weight * unmet_need_scaled * time_multiplier
+        shortfall_penalty_term = (
+            -self.shortfall_weight
+            * unmet_need_scaled
+            * current_shortfall_penalty
+            * time_multiplier
+        )
+
+        overshoot_penalty = -self.overshoot_weight * overshoot_scaled
+        disposal_penalty_term = (
+            -self.disposal_weight
+            * overshoot_scaled
+            * current_disposal_cost
+        )
+
+        productivity_proxy = max(0.0, 1.0 - min(1.0, unmet_need_scaled))
+        productivity_bonus = self.productivity_weight * productivity_proxy
+
+        return {
+            "active_need_type": active_need_type,
+            "active_need": active_need,
+            "needed_sales": needed_sales,
+            "needed_supplies": needed_supplies,
+            "unmet_need": unmet_need,
+            "overshoot": overshoot,
+            "need_scale": need_scale,
+            "unmet_need_scaled": unmet_need_scaled,
+            "overshoot_scaled": overshoot_scaled,
+            "relative_time": relative_time,
+            "time_multiplier": time_multiplier,
+            "current_shortfall_penalty": current_shortfall_penalty,
+            "current_disposal_cost": current_disposal_cost,
+            "productivity_proxy": productivity_proxy,
+            "need_penalty": need_penalty,
+            "shortfall_penalty_term": shortfall_penalty_term,
+            "overshoot_penalty": overshoot_penalty,
+            "disposal_penalty_term": disposal_penalty_term,
+            "productivity_bonus": productivity_bonus,
+        }
+
+    def _open_reward_log(self) -> None:
+        """Open one reward component log per worker process."""
+        run_name = os.environ.get("RUN_NAME", "default")
+        job_id = os.environ.get("SLURM_JOB_ID", "local")
+        context_name = type(self.context).__name__
+        pid = os.getpid()
+
+        log_dir = os.path.join(
+            "reward_component_logs",
+            run_name,
+            context_name,
+            job_id,
+        )
+        os.makedirs(log_dir, exist_ok=True)
+
+        log_path = os.path.join(log_dir, f"reward_components_{pid}.csv")
+
+        self.reward_log_file = open(log_path, "w", newline="")
+        self.reward_log_writer = csv.DictWriter(
+            self.reward_log_file,
+            fieldnames=[
+                "pid",
+                "context",
+                "current_step",
+                "relative_time",
+                "n_steps",
+                "active_need_type",
+                "active_need",
+                "needed_sales",
+                "needed_supplies",
+                "unmet_need",
+                "overshoot",
+                "need_scale",
+                "unmet_need_scaled",
+                "overshoot_scaled",
+                "time_multiplier",
+                "current_score",
+                "previous_score",
+                "score_delta",
+                "score_delta_weight",
+                "score_delta_bonus",
+                "need_weight",
+                "need_penalty",
+                "shortfall_weight",
+                "shortfall_penalty_term",
+                "overshoot_weight",
+                "overshoot_penalty",
+                "disposal_weight",
+                "disposal_penalty_term",
+                "productivity_weight",
+                "productivity_proxy",
+                "productivity_bonus",
+                "shaping_reward",
+                "base_reward",
+                "final_reward",
+                "current_disposal_cost",
+                "current_shortfall_penalty",
+                "current_storage_cost",
+                "current_inventory_input",
+                "current_inventory_output",
+                "n_action_responses",
+                "n_action_accept",
+                "n_action_reject",
+                "n_action_end",
+                "n_action_offer",
+            ],
+        )
+        self.reward_log_writer.writeheader()
+
+    def _close_reward_log(self) -> None:
+        """Flush and close the reward component log."""
+        if self.reward_log_file is None:
+            return
+
+        try:
+            self.reward_log_file.flush()
+            self.reward_log_file.close()
+        except Exception:
+            pass
+
+        self.reward_log_file = None
+        self.reward_log_writer = None
+
+    def _log_reward_components(
+        self,
+        awi: OneShotAWI,
+        action: dict[str, SAOResponse],
+        previous_score: float,
+        current_score: float,
+        base_reward: float,
+        score_delta: float,
+        score_delta_bonus: float,
+        shaping_reward: float,
+        final_reward: float,
+        reward_terms: dict[str, float | str],
+    ) -> None:
+        """Write one reward component row."""
+        if self.reward_log_writer is None:
+            return
+
+        action_counts = self._summarize_action(action)
+
+        self.reward_log_writer.writerow(
+            {
+                "pid": os.getpid(),
+                "context": type(self.context).__name__,
+                "current_step": _safe_float(getattr(awi, "current_step", 0)),
+                "relative_time": reward_terms["relative_time"],
+                "n_steps": _safe_float(getattr(awi, "n_steps", 0)),
+                "active_need_type": reward_terms["active_need_type"],
+                "active_need": reward_terms["active_need"],
+                "needed_sales": reward_terms["needed_sales"],
+                "needed_supplies": reward_terms["needed_supplies"],
+                "unmet_need": reward_terms["unmet_need"],
+                "overshoot": reward_terms["overshoot"],
+                "need_scale": reward_terms["need_scale"],
+                "unmet_need_scaled": reward_terms["unmet_need_scaled"],
+                "overshoot_scaled": reward_terms["overshoot_scaled"],
+                "time_multiplier": reward_terms["time_multiplier"],
+                "current_score": current_score,
+                "previous_score": previous_score,
+                "score_delta": score_delta,
+                "score_delta_weight": self.score_delta_weight,
+                "score_delta_bonus": score_delta_bonus,
+                "need_weight": self.need_weight,
+                "need_penalty": reward_terms["need_penalty"],
+                "shortfall_weight": self.shortfall_weight,
+                "shortfall_penalty_term": reward_terms["shortfall_penalty_term"],
+                "overshoot_weight": self.overshoot_weight,
+                "overshoot_penalty": reward_terms["overshoot_penalty"],
+                "disposal_weight": self.disposal_weight,
+                "disposal_penalty_term": reward_terms["disposal_penalty_term"],
+                "productivity_weight": self.productivity_weight,
+                "productivity_proxy": reward_terms["productivity_proxy"],
+                "productivity_bonus": reward_terms["productivity_bonus"],
+                "shaping_reward": shaping_reward,
+                "base_reward": base_reward,
+                "final_reward": final_reward,
+                "current_disposal_cost": reward_terms["current_disposal_cost"],
+                "current_shortfall_penalty": reward_terms["current_shortfall_penalty"],
+                "current_storage_cost": _safe_float(
+                    getattr(awi, "current_storage_cost", 0.0)
+                ),
+                "current_inventory_input": _safe_float(
+                    getattr(awi, "current_inventory_input", 0.0)
+                ),
+                "current_inventory_output": _safe_float(
+                    getattr(awi, "current_inventory_output", 0.0)
+                ),
+                **action_counts,
+            }
+        )
+
+        self.reward_log_rows_since_flush += 1
+
+        if self.reward_log_rows_since_flush >= self.reward_log_flush_every:
+            self.reward_log_file.flush()
+            self.reward_log_rows_since_flush = 0
+
+    def _summarize_action(self, action: dict[str, SAOResponse]) -> dict[str, float]:
+        """Summarize response types in the selected action."""
+        counts = {
+            "n_action_responses": 0.0,
+            "n_action_accept": 0.0,
+            "n_action_reject": 0.0,
+            "n_action_end": 0.0,
+            "n_action_offer": 0.0,
+        }
+
+        if not isinstance(action, dict):
+            return counts
+
+        counts["n_action_responses"] = float(len(action))
+
+        for response in action.values():
+            response_type = str(getattr(response, "response", "")).lower()
+            outcome = getattr(response, "outcome", None)
+
+            if "accept" in response_type:
+                counts["n_action_accept"] += 1.0
+            elif "reject" in response_type:
+                counts["n_action_reject"] += 1.0
+            elif "end" in response_type:
+                counts["n_action_end"] += 1.0
+
+            if outcome is not None:
+                counts["n_action_offer"] += 1.0
+
+        return counts
+
+
+def make_env(context_name) -> OneShotEnv:
+    """Create a training environment for one context."""
 
         return base_reward + 0.1 * score_delta
 
@@ -440,10 +1296,11 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
         )
     )
     context = make_context(context_name)
+
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
-        observation_manager=FlexibleObservationManager(context=context), 
-        reward_function=make_reward_function(context=context),
+        observation_manager=MyObservationManager(context=context, continuous=True),  # type: ignore
+        reward_function=MyRewardFunction(context=context),
         context=context,
         extra_checks=False,
     )
@@ -504,23 +1361,20 @@ def try_a_model(
     model,
     context_name: str,
 ):
-    """Runs a single simulation with one agent controlled with the given model"""
-
-    obs_type = FlexibleObservationManager
-    # Create a world context compatibly with the model
+    """Run a single simulation with one trained model."""
     context = make_context(context_name)
-    # sample a world and the RL agents (always one in this case)
+
     world, _ = context.generate(
         types=(OneShotRLAgent,),
         params=(
             dict(
                 models=[model_wrapper(model)],
-                observation_managers=[obs_type(context)],
+                observation_managers=[MyObservationManager(context, continuous=True)],
                 action_managers=[FlexibleActionManager(context)],
             ),
         ),
     )
-    # run the world simulation
+
     world.run_with_progress()
     return world
 
@@ -565,24 +1419,56 @@ def try_a_trained_model(context_name: str):
 
     
 def train_one(context_name, ntrain, params, queue):
+    """Train one model for one context."""
     print(f"Training as {context_name}")
     env = None
 
-    try:
-        env = SubprocVecEnv(
-            [lambda: make_env(context_name)] * params["n_envs"]
-        )      
+    run_name = os.environ.get("RUN_NAME", "default")
+    eval_freq = int(os.environ.get("EVAL_FREQ", str(max(ntrain // 5, 1))))
+    n_eval_episodes = int(os.environ.get("N_EVAL_EPISODES", "3"))
+    diagnostics_freq = int(os.environ.get("DIAGNOSTICS_FREQ", str(max(ntrain // 20, 1))))
 
-        model = TrainingAlgorithm(  # type: ignore learning_rate must be passed by the algorithm itself
-            "MlpPolicy", env, verbose=0, tensorboard_log=f"./tensorboard_logs/{context_name}"
+    callbacks: list[BaseCallback] = [
+        ProgressCallback(queue, context_name),
+        TrainingDiagnosticsCallback(log_freq=diagnostics_freq),
+    ]
+
+    if eval_freq > 0 and n_eval_episodes > 0:
+        callbacks.append(
+            EvaluationCallback(
+                context_name=context_name,
+                eval_freq=eval_freq,
+                n_eval_episodes=n_eval_episodes,
+            )
+        )
+
+    try:
+        env = VecMonitor(
+            SubprocVecEnv(
+                [
+                    lambda context_name=context_name: make_env(context_name)
+                    for _ in range(params["n_envs"])
+                ]
+            )
+        )
+
+        policy_kwargs = dict(
+            net_arch=[128, 128]
+        )
+
+        model = TrainingAlgorithm(
+            "MlpPolicy",
+            env,
+            verbose=0,
+            policy_kwargs=policy_kwargs,
+            tensorboard_log=f"./tensorboard_logs/{run_name}/{context_name}",
         )
 
         model.learn(
             total_timesteps=ntrain,
             progress_bar=False,
-            callback=[ProgressCallback(queue, context_name),
-                      EvaluationCallback(context_name, eval_freq=int(NTRAINING/10), n_eval_episodes=10)
-                      ] 
+            callback=callbacks,
+            tb_log_name=context_name,
         )
 
         model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
@@ -604,32 +1490,41 @@ def test_train(context_name):
     
 
 def main(ntrain: int = NTRAINING):
-    # choose the type of the model. Possibilities supported are:
-    # fixed: Supports a single world configuration
-    # limited: Supports a limited range of world configuration
-    # unlimited: Supports any range of world configurations
-
-    #test_train("StrongSupplierContext")
-
-    
+    """Train models for selected contexts."""
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
-    
+
     if slurm_cpus:
         total_cores = int(slurm_cpus)
     else:
         total_cores = os.cpu_count() or 1
+
     n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
+
     params = get_parallelization_params(n_models_parallel=n_parallel)
+
+    print("=== Training config ===")
+    print(f"ntrain: {ntrain}")
+    print(f"contexts: {CONTEXTS}")
+    print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
+    print(f"eval_freq: {os.environ.get('EVAL_FREQ', f'{max(ntrain // 5, 1)}')}")
+    print(f"n_eval_episodes: {os.environ.get('N_EVAL_EPISODES', '3')}")
+    print(f"reward_score_delta_weight: {os.environ.get('REWARD_SCORE_DELTA_WEIGHT', '0.1')}")
+    print(f"reward_need_weight: {os.environ.get('REWARD_NEED_WEIGHT', '0.0')}")
+    print(f"reward_shortfall_weight: {os.environ.get('REWARD_SHORTFALL_WEIGHT', '0.0')}")
+    print(f"reward_overshoot_weight: {os.environ.get('REWARD_OVERSHOOT_WEIGHT', '0.0')}")
+    print(f"reward_disposal_weight: {os.environ.get('REWARD_DISPOSAL_WEIGHT', '0.0')}")
+    print(f"reward_productivity_weight: {os.environ.get('REWARD_PRODUCTIVITY_WEIGHT', '0.0')}")
+    print(f"reward_time_pressure_weight: {os.environ.get('REWARD_TIME_PRESSURE_WEIGHT', '1.0')}")
+    print(f"reward_need_normalizer: {os.environ.get('REWARD_NEED_NORMALIZER', '0.0')}")
+    print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
+    print(f"rl_agent_code: {_rl_agent_code()}")
     
-    #params = {"n_envs": 1,"n_models_parallel": 1,}
-    #n_parallel = 1
 
     queue = Queue()
 
     for i in range(0, len(CONTEXTS), n_parallel):
         batch = CONTEXTS[i : i + n_parallel]
 
-        # create one bar per context in this batch
         bars = {
             name: tqdm(total=ntrain, desc=name, position=j, leave=True)
             for j, name in enumerate(batch)
@@ -639,21 +1534,23 @@ def main(ntrain: int = NTRAINING):
             Process(target=train_one, args=(context_name, ntrain, params, queue))
             for context_name in batch
         ]
-        for p in processes:
-            p.start()
 
-        # main process handles all terminal output
+        for process in processes:
+            process.start()
+
         finished = 0
+
         while finished < len(batch):
             context_name, steps = queue.get()
+
             if steps is None:
                 bars[context_name].close()
                 finished += 1
             else:
                 bars[context_name].update(steps)
 
-        for p in processes:
-            p.join()     
+        for process in processes:
+            process.join()
 
 
 if __name__ == "__main__":
