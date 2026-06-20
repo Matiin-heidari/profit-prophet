@@ -1,0 +1,44 @@
+================================================================================
+JobID = 14327046
+User = u28153, Account = kisski-aai-ss26
+Partition = kisski, Nodelist = ggpu175
+================================================================================
+=== Validation sweep config ===
+task_id=6
+config_id=2
+repeat_id=0
+RUN_NAME=validate_bs_02_need_00025_shortfall_0001_r0
+TRAIN_CONTEXTS=BalancedSupplierContext
+N_EVAL_EPISODES=5
+REWARD_SCORE_DELTA_WEIGHT=0.1
+REWARD_NEED_WEIGHT=0.00025
+REWARD_SHORTFALL_WEIGHT=0.0001
+REWARD_OVERSHOOT_WEIGHT=0.0
+REWARD_DISPOSAL_WEIGHT=0.0
+REWARD_PRODUCTIVITY_WEIGHT=0.0
+Detected 48 cores from SLURM_CPUS_PER_TASK → using 8 envs per model (1 model(s) training in parallel)
+=== Training config ===
+ntrain: 300000
+contexts: ['BalancedSupplierContext']
+run_name: validate_bs_02_need_00025_shortfall_0001_r0
+eval_freq: 50000
+n_eval_episodes: 5
+reward_score_delta_weight: 0.1
+reward_need_weight: 0.00025
+reward_shortfall_weight: 0.0001
+reward_overshoot_weight: 0.0
+reward_disposal_weight: 0.0
+reward_productivity_weight: 0.0
+reward_time_pressure_weight: 1.0
+reward_need_normalizer: 0.0
+diagnostics_freq: 10000
+rl_agent_code: On
+Training as BalancedSupplierContext
+============ Job Information ===================================================
+Submitted: 2026-06-16T11:28:15
+Started: 2026-06-16T14:32:34
+Ended: 2026-06-16T14:53:26
+Elapsed: 21 min, Limit: 180 min, Difference: 159 min
+CPUs: 48, Nodes: 1
+Estimated credit Consumption:  core-hours
+================================================================================
