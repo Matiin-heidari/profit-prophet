@@ -16,7 +16,7 @@ from scml.oneshot.context import (
     BalancedConsumerContext,
     WeakConsumerContext,
 )
-from stable_baselines3 import A2C
+from stable_baselines3 import A2C, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 
 TrainingAlgorithm: type[BaseAlgorithm] = PPO
