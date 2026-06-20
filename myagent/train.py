@@ -418,12 +418,12 @@ class _BaseReward(DefaultRewardFunction):
         info: float,
     ) -> float:
 
-        extra = self._extra(awi, action)
+        extra = self._extra(awi, action, info)
         return extra
 
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
-        """Context-specific shaping term.  Must not raise."""
-        return 0.0
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
+        """Context-specific shaping term. Defaults to score delta. Should usually be overridden."""
+        return super().__call__(awi, action, info)
 
 
 class StrongSupplierRewardFunction(_BaseReward):
@@ -434,7 +434,7 @@ class StrongSupplierRewardFunction(_BaseReward):
  
     PRICE_SCALE = 0.20    # max bonus/penalty magnitude per agreement
  
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
         try:
             _, catalog_out = _catalog_prices(awi)
             deals = _sell_agreement_prices(awi)
@@ -460,7 +460,7 @@ class WeakSupplierRewardFunction(_BaseReward):
     DEAL_BONUS = 0.10
     ENGAGEMENT_SCALE = 0.10
 
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
         try:
             shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_sell_ratio(awi)
 
@@ -496,7 +496,7 @@ class BalancedSupplierRewardFunction(_BaseReward):
     PRICE_SCALE = 0.10
     SHORTFALL_SCALE = 0.10
  
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
         try:
             _, catalog_out = _catalog_prices(awi)
  
@@ -520,7 +520,7 @@ class StrongConsumerRewardFunction(_BaseReward):
 
     PRICE_SCALE = 0.20
  
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
         try:
             catalog_in, _ = _catalog_prices(awi)
             deals = _buy_agreement_prices(awi)
@@ -544,7 +544,7 @@ class WeakConsumerRewardFunction(_BaseReward):
     DEAL_BONUS = 0.10
     ENGAGEMENT_SCALE = 0.10
 
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
         try:
             shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_buy_ratio(awi)
 
@@ -576,7 +576,7 @@ class BalancedConsumerRewardFunction(_BaseReward):
     PRICE_SCALE = 0.10
     SHORTFALL_SCALE = 0.10
 
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse]) -> float:
+    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
         try:
             catalog_in, _ = _catalog_prices(awi)
 
@@ -1435,16 +1435,16 @@ def main(ntrain: int = NTRAINING):
     print(f"ntrain: {ntrain}")
     print(f"contexts: {CONTEXTS}")
     print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
-    print(f"eval_freq: {os.environ.get('EVAL_FREQ', f'{max(ntrain // 5, 1)}')}")
-    print(f"n_eval_episodes: {os.environ.get('N_EVAL_EPISODES', '3')}")
-    print(f"reward_score_delta_weight: {os.environ.get('REWARD_SCORE_DELTA_WEIGHT', '0.1')}")
-    print(f"reward_need_weight: {os.environ.get('REWARD_NEED_WEIGHT', '0.0')}")
-    print(f"reward_shortfall_weight: {os.environ.get('REWARD_SHORTFALL_WEIGHT', '0.0')}")
-    print(f"reward_overshoot_weight: {os.environ.get('REWARD_OVERSHOOT_WEIGHT', '0.0')}")
-    print(f"reward_disposal_weight: {os.environ.get('REWARD_DISPOSAL_WEIGHT', '0.0')}")
-    print(f"reward_productivity_weight: {os.environ.get('REWARD_PRODUCTIVITY_WEIGHT', '0.0')}")
-    print(f"reward_time_pressure_weight: {os.environ.get('REWARD_TIME_PRESSURE_WEIGHT', '1.0')}")
-    print(f"reward_need_normalizer: {os.environ.get('REWARD_NEED_NORMALIZER', '0.0')}")
+    #print(f"eval_freq: {os.environ.get('EVAL_FREQ', f'{max(ntrain // 5, 1)}')}")
+    #print(f"n_eval_episodes: {os.environ.get('N_EVAL_EPISODES', '3')}")
+    #print(f"reward_score_delta_weight: {os.environ.get('REWARD_SCORE_DELTA_WEIGHT', '0.1')}")
+    #print(f"reward_need_weight: {os.environ.get('REWARD_NEED_WEIGHT', '0.0')}")
+    #print(f"reward_shortfall_weight: {os.environ.get('REWARD_SHORTFALL_WEIGHT', '0.0')}")
+    #print(f"reward_overshoot_weight: {os.environ.get('REWARD_OVERSHOOT_WEIGHT', '0.0')}")
+    #print(f"reward_disposal_weight: {os.environ.get('REWARD_DISPOSAL_WEIGHT', '0.0')}")
+    #print(f"reward_productivity_weight: {os.environ.get('REWARD_PRODUCTIVITY_WEIGHT', '0.0')}")
+    #print(f"reward_time_pressure_weight: {os.environ.get('REWARD_TIME_PRESSURE_WEIGHT', '1.0')}")
+    #print(f"reward_need_normalizer: {os.environ.get('REWARD_NEED_NORMALIZER', '0.0')}")
     print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
     print(f"rl_agent_code: {_rl_agent_code()}")
     
@@ -1484,10 +1484,5 @@ def main(ntrain: int = NTRAINING):
 
 if __name__ == "__main__":
     import sys
-    #cont_str = "BalancedSupplierContext"
-    #try_a_trained_model(cont_str)
-    #path = MODEL_PATH.parent / f"{MODEL_PATH.name}{cont_str}"
-    #model = TrainingAlgorithm.load(path)
-    #print(evaluate_model(model, cont_str))
 
     main(int(sys.argv[1]) if len(sys.argv) > 1 else NTRAINING)
