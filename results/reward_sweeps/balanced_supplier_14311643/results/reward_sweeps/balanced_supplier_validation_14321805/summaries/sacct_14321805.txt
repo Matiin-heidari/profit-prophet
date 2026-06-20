@@ -1,0 +1,56 @@
+JobID                     JobName      State ExitCode    Elapsed     MaxRSS  AllocCPUS 
+------------ -------------------- ---------- -------- ---------- ---------- ---------- 
+14321805_0        reward_validate  COMPLETED      0:0   00:37:15                    48 
+14321805_0.+                batch  COMPLETED      0:0   00:37:15  17482768K         48 
+14321805_0.+               extern  COMPLETED      0:0   00:37:15                    48 
+14321805_1        reward_validate  COMPLETED      0:0   00:20:03                    48 
+14321805_1.+                batch  COMPLETED      0:0   00:20:03  14545296K         48 
+14321805_1.+               extern  COMPLETED      0:0   00:20:03                    48 
+14321805_2        reward_validate  COMPLETED      0:0   00:30:45                    48 
+14321805_2.+                batch  COMPLETED      0:0   00:30:45  15564312K         48 
+14321805_2.+               extern  COMPLETED      0:0   00:30:45                    48 
+14321805_3        reward_validate  COMPLETED      0:0   00:23:45                    48 
+14321805_3.+                batch  COMPLETED      0:0   00:23:45  14522444K         48 
+14321805_3.+               extern  COMPLETED      0:0   00:23:45                    48 
+14321805_4        reward_validate  COMPLETED      0:0   00:36:37                    48 
+14321805_4.+                batch  COMPLETED      0:0   00:36:37  17939536K         48 
+14321805_4.+               extern  COMPLETED      0:0   00:36:37                    48 
+14321805_5        reward_validate  COMPLETED      0:0   00:25:17                    48 
+14321805_5.+                batch  COMPLETED      0:0   00:25:17  16232364K         48 
+14321805_5.+               extern  COMPLETED      0:0   00:25:17                    48 
+14321805_6        reward_validate  COMPLETED      0:0   00:20:53                    48 
+14321805_6.+                batch  COMPLETED      0:0   00:20:53  16257968K         48 
+14321805_6.+               extern  COMPLETED      0:0   00:20:53                    48 
+14321805_7        reward_validate  COMPLETED      0:0   00:22:00                    48 
+14321805_7.+                batch  COMPLETED      0:0   00:22:00  18008344K         48 
+14321805_7.+               extern  COMPLETED      0:0   00:22:00                    48 
+14321805_8        reward_validate  COMPLETED      0:0   00:25:05                    48 
+14321805_8.+                batch  COMPLETED      0:0   00:25:05  16636896K         48 
+14321805_8.+               extern  COMPLETED      0:0   00:25:06                    48 
+14321805_9        reward_validate  COMPLETED      0:0   00:24:02                    48 
+14321805_9.+                batch  COMPLETED      0:0   00:24:02  16587856K         48 
+14321805_9.+               extern  COMPLETED      0:0   00:24:02                    48 
+14321805_10       reward_validate  COMPLETED      0:0   00:22:15                    48 
+14321805_10+                batch  COMPLETED      0:0   00:22:15  15420316K         48 
+14321805_10+               extern  COMPLETED      0:0   00:22:15                    48 
+14321805_11       reward_validate  COMPLETED      0:0   00:28:12                    48 
+14321805_11+                batch  COMPLETED      0:0   00:28:12  15509288K         48 
+14321805_11+               extern  COMPLETED      0:0   00:28:12                    48 
+14321805_12       reward_validate  COMPLETED      0:0   00:21:35                    48 
+14321805_12+                batch  COMPLETED      0:0   00:21:35  16452116K         48 
+14321805_12+               extern  COMPLETED      0:0   00:21:35                    48 
+14321805_13       reward_validate  COMPLETED      0:0   00:26:29                    48 
+14321805_13+                batch  COMPLETED      0:0   00:26:29  14921172K         48 
+14321805_13+               extern  COMPLETED      0:0   00:26:29                    48 
+14321805_14       reward_validate  COMPLETED      0:0   00:31:40                    48 
+14321805_14+                batch  COMPLETED      0:0   00:31:40  20490980K         48 
+14321805_14+               extern  COMPLETED      0:0   00:31:40                    48 
+14321805_15       reward_validate  COMPLETED      0:0   00:22:09                    48 
+14321805_15+                batch  COMPLETED      0:0   00:22:09  16880776K         48 
+14321805_15+               extern  COMPLETED      0:0   00:22:09                    48 
+14321805_16       reward_validate  COMPLETED      0:0   00:21:47                    48 
+14321805_16+                batch  COMPLETED      0:0   00:21:47  16825996K         48 
+14321805_16+               extern  COMPLETED      0:0   00:21:47                    48 
+14321805_17       reward_validate  COMPLETED      0:0   00:21:25                    48 
+14321805_17+                batch  COMPLETED      0:0   00:21:25  13338024K         48 
+14321805_17+               extern  COMPLETED      0:0   00:21:25                    48 
