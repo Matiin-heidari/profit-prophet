@@ -1024,10 +1024,15 @@ def train_one(context_name, ntrain, params, queue):
             )
         )
 
+        policy_kwargs = dict(
+            net_arch=[128, 128]
+        )
+
         model = TrainingAlgorithm(
             "MlpPolicy",
             env,
             verbose=0,
+            policy_kwargs=policy_kwargs,
             tensorboard_log=f"./tensorboard_logs/{run_name}/{context_name}",
         )
 
@@ -1058,6 +1063,7 @@ def main(ntrain: int = NTRAINING):
         total_cores = os.cpu_count() or 1
 
     n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
+
     params = get_parallelization_params(n_models_parallel=n_parallel)
 
     print("=== Training config ===")

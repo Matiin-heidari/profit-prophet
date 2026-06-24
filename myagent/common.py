@@ -19,8 +19,8 @@ from scml.oneshot.context import (
 from stable_baselines3 import A2C
 from stable_baselines3.common.base_class import BaseAlgorithm
 
-TrainingAlgorithm: type[BaseAlgorithm] = A2C
-"""The algorithm used for training."""
+TrainingAlgorithm: type[BaseAlgorithm] = PPO
+"""The algorithm used for training. You can use any stable_baselines3 algorithm or develop your own"""
 
 MODEL_PATH = Path(__file__).parent / "models" / "mymodel"
 """The path in which train.py saves the trained model and from which myagent.py loads it."""
@@ -76,7 +76,10 @@ def get_parallelization_params(n_models_parallel: int = 1) -> dict:
     usable_cores = max(1, total_cores - 1)
     cores_per_model = max(1, usable_cores // n_models_parallel)
 
+    # n_envs for the case of running on HPC
     n_envs = min(cores_per_model, 8)
+    # in case of running on the local machine
+    #n_envs = 2
 
     print(
         f"Detected {total_cores} cores from {source} → "
