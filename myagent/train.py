@@ -1171,8 +1171,17 @@ def dump_object(obj):
     return data
 
 def make_env(context_name, log: bool = False) -> OneShotEnv:
-    log_params: dict[str, Any] = (
-        dict(
+    # World construction params. These are passed to the world via the
+    # context's `world_params` (OneShotEnv builds the world from the context
+    # in reset(), so there is no other place to inject them).
+    #
+    # NOTE: `debug=True` is a strict/fail-fast mode that *forces* all four
+    # ignore_*_exceptions back to False, so the two are mutually exclusive.
+    # The default (training) path uses debug=False + ignore exceptions so a
+    # rare agent/negotiation error logs-and-continues instead of killing a
+    # long run. The `log=True` path is the fail-fast debugging profile.
+    if log:
+        world_params: dict[str, Any] = dict(
             no_logs=False,
             log_stats_every=1,
             log_file_level=logging.DEBUG,
@@ -1184,18 +1193,17 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
             save_unresolved_breaches=True,
             debug=True,
         )
-        if log
-        else dict(debug=True)
-    )
-    log_params.update(
-        dict(
-            ignore_agent_exceptions=False,
-            ignore_negotiation_exceptions=False,
-            ignore_contract_execution_exceptions=False,
-            ignore_simulation_exceptions=False,
+    else:
+        world_params = dict(
+            debug=False,
+            ignore_agent_exceptions=True,
+            ignore_negotiation_exceptions=True,
+            ignore_contract_execution_exceptions=True,
+            ignore_simulation_exceptions=True,
         )
-    )
+
     context = make_context(context_name)
+    context.world_params.update(world_params)
 
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
