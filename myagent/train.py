@@ -695,30 +695,23 @@ class TrainingDiagnosticsCallback(BaseCallback):
 # A matching REWARD_* environment variable always overrides the value here,
 # so sweeps that set the env vars explicitly are unaffected;
 _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
-    "StrongSupplierContext": {"price_weight": 0.20},
-    "BalancedSupplierContext": {
-        "price_weight": 0.10,
-        "need_weight": 0.10
-    },
-    "WeakSupplierContext": {
-        "deal_weight": 0.10,
-        "need_weight": 0.20,
-    },
-    "StrongConsumerContext": {"price_weight": 0.20},
-    "BalancedConsumerContext": {
-        "price_weight": 0.10,
-        "need_weight": 0.10
-    },
-    "WeakConsumerContext": {
-        "deal_weight": 0.10,
-        "need_weight": 0.20,
-    },
+    # Strong: price is the primary (quality) driver; a small need term gives a
+    # dense gradient toward trading (price alone only pays once a deal closes).
+    "StrongSupplierContext": {"price_weight": 0.50, "need_weight": 0.05},
+    "StrongConsumerContext": {"price_weight": 0.50, "need_weight": 0.05},
+    # Balanced: price and coverage at moderate, comparable scale.
+    "BalancedSupplierContext": {"price_weight": 0.30, "need_weight": 0.05},
+    "BalancedConsumerContext": {"price_weight": 0.30, "need_weight": 0.05},
+    # Weak: realized-volume (deal) is the main signal; need kept small so it no
+    # longer dominates every other term.
+    "WeakSupplierContext": {"deal_weight": 0.20, "need_weight": 0.05},
+    "WeakConsumerContext": {"deal_weight": 0.20, "need_weight": 0.05},
 }
 
 # Maps each reward-weight attribute to its environment variable and global
 # default. Single source of truth for both MyRewardFunction and the config dump.
 _REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
-    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 3.0),
+    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 10.0),
     "need_weight": ("REWARD_NEED_WEIGHT", 0.0),
     "shortfall_weight": ("REWARD_SHORTFALL_WEIGHT", 0.0),
     "overshoot_weight": ("REWARD_OVERSHOOT_WEIGHT", 0.0),
@@ -981,7 +974,7 @@ class MyRewardFunction(RewardFunction):
                 for price, qty in deals:
                     ratio = sign * (price - reference) / max(reference, 1e-6)
                     price_bonus += (
-                        float(np.clip(ratio, -0.10, 0.10)) * (qty / max(total_qty, 1))
+                        float(np.clip(ratio, -0.25, 0.25)) * (qty / max(total_qty, 1))
                     )
                 terms["price_bonus"] = self.price_weight * price_bonus
 
