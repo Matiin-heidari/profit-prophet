@@ -689,7 +689,7 @@ _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
 # Maps each reward-weight attribute to its environment variable and global
 # default. Single source of truth for both MyRewardFunction and the config dump.
 _REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
-    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 1.0),
+    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 0.2),
     "need_weight": ("REWARD_NEED_WEIGHT", 0.0),
     "shortfall_weight": ("REWARD_SHORTFALL_WEIGHT", 0.0),
     "overshoot_weight": ("REWARD_OVERSHOOT_WEIGHT", 0.0),
