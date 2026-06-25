@@ -16,7 +16,7 @@ from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
 from scml.oneshot.rl.env import OneShotEnv
 from scml.oneshot.rl.observation import FlexibleObservationManager
-from scml.oneshot.rl.reward import DefaultRewardFunction
+from scml.oneshot.rl.reward import RewardFunction
 
 from tqdm import tqdm
 from stable_baselines3.common.callbacks import BaseCallback
@@ -366,7 +366,12 @@ def _sell_agreement_prices(awi: OneShotAWI) -> list[tuple[float, int]]:
 
 
 def _buy_agreement_prices(awi: OneShotAWI) -> list[tuple[float, int]]:
-    """(unit_price, quantity) pairs from buy negotiations that closed with an agreement this step."""
+    """(unit_price, quantity) pairs from buy negotiations that closed with an agreement this step.
+
+    NOTE: superseded by ``_diff_deals``. ``current_buy_states`` only lists
+    *running* negotiations, where ``agreement`` is never populated (concluded
+    deals leave that set), so this reads empty in practice. Kept for reference.
+    """
     try:
         return [
             (float(state.agreement[_UNIT_PRICE_IDX]), int(state.agreement[0]))
@@ -375,7 +380,33 @@ def _buy_agreement_prices(awi: OneShotAWI) -> list[tuple[float, int]]:
         ]
     except Exception:
         return []
- 
+
+
+def _diff_deals(
+    cur_qty: dict, cur_cost: dict, prev_qty: dict, prev_cost: dict
+) -> list[tuple[float, int]]:
+    """(unit_price, quantity) for deals realized since a ``before_action`` snapshot.
+
+    Reads per-partner secured quantity and total price (``awi.sales`` /
+    ``awi.sales_cost`` for selling, ``awi.supplies`` / ``awi.supplies_cost`` for
+    buying) and returns only *positive* increments. This is robust across day
+    boundaries: a new day's counters start fresh and only grow, so positive
+    deltas always correspond to genuinely new deals. This is the reward-time-valid
+    way to observe closed deals (``current_*_states`` cannot — see above).
+    """
+    deals: list[tuple[float, int]] = []
+    try:
+        for partner, qty in cur_qty.items():
+            dq = int(qty) - int(prev_qty.get(partner, 0))
+            if dq > 0:
+                dc = float(cur_cost.get(partner, 0.0)) - float(prev_cost.get(partner, 0.0))
+                unit = dc / dq if dq else 0.0
+                deals.append((float(unit), dq))
+    except Exception:
+        return []
+    return deals
+
+
 def _shortfall_sell_ratio(awi: OneShotAWI) -> float:
     """Fraction of required sales not yet covered, in [0, 1]."""
     try:
@@ -719,7 +750,7 @@ def resolve_reward_weights(context_name: str) -> dict[str, float]:
     return resolved
 
 
-class MyRewardFunction(DefaultRewardFunction):
+class MyRewardFunction(RewardFunction):
     """Reward shaping with configurable terms."""
 
     def __init__(self, context: GeneralContext):
@@ -758,17 +789,44 @@ class MyRewardFunction(DefaultRewardFunction):
 
         atexit.register(self._close_reward_log)
 
-    def before_action(self, awi: OneShotAWI) -> float:
-        return float(getattr(awi, "current_score", 0.0))
+    def before_action(self, awi: OneShotAWI) -> dict[str, Any]:
+        # Snapshot the score and the per-partner secured quantity/price so
+        # __call__ can diff and see deals that closed during this step.
+        # current_*_states only lists RUNNING negotiations (agreement never set),
+        # so realized trade must be read from sales/supplies counters instead.
+        return {
+            "score": float(getattr(awi, "current_score", 0.0)),
+            "sales": dict(getattr(awi, "sales", {}) or {}),
+            "sales_cost": dict(getattr(awi, "sales_cost", {}) or {}),
+            "supplies": dict(getattr(awi, "supplies", {}) or {}),
+            "supplies_cost": dict(getattr(awi, "supplies_cost", {}) or {}),
+        }
 
-    def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: float):
-        previous_score = _safe_float(info)
+    def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: Any):
+        before = info if isinstance(info, dict) else {}
+        previous_score = _safe_float(before.get("score", info))
         current_score = _safe_float(getattr(awi, "current_score", previous_score))
         score_delta = current_score - previous_score
         score_delta_bonus = self.score_delta_weight * score_delta
 
+        # Deals realized this step, read from a reward-time-valid source.
+        sell_deals = _diff_deals(
+            getattr(awi, "sales", {}) or {},
+            getattr(awi, "sales_cost", {}) or {},
+            before.get("sales", {}),
+            before.get("sales_cost", {}),
+        )
+        buy_deals = _diff_deals(
+            getattr(awi, "supplies", {}) or {},
+            getattr(awi, "supplies_cost", {}) or {},
+            before.get("supplies", {}),
+            before.get("supplies_cost", {}),
+        )
+
         reward_terms = self._calculate_reward_terms(awi)
-        context_terms = self._calculate_context_shaping(awi, action)
+        context_terms = self._calculate_context_shaping(
+            awi, action, sell_deals, buy_deals
+        )
 
         final_reward = (
             score_delta_bonus
@@ -882,18 +940,21 @@ class MyRewardFunction(DefaultRewardFunction):
         }
 
     def _calculate_context_shaping(
-        self, awi: OneShotAWI, action: dict[str, SAOResponse]
+        self,
+        awi: OneShotAWI,
+        action: dict[str, SAOResponse],
+        sell_deals: list[tuple[float, int]],
+        buy_deals: list[tuple[float, int]],
     ) -> dict[str, float]:
         """Side-aware price/deal/engagement shaping.
 
-        Integrates the former per-context reward functions into the configurable
-        base. The trading *side* (sell for suppliers, buy for consumers) and the
-        "good price" direction are auto-detected from the context name; the three
-        weights control how strongly each signal contributes:
+        ``sell_deals`` / ``buy_deals`` are ``(unit_price, quantity)`` pairs for
+        deals *actually realized this step* (from ``_diff_deals``). The trading
+        *side* and the "good price" direction are auto-detected from the context:
 
-        - ``price_weight``: quantity-weighted reward for agreements that beat the
+        - ``price_weight``: quantity-weighted reward for deals that beat the
           catalog price (above catalog when selling, below when buying).
-        - ``deal_weight``: reward per closed agreement, normalized by partners.
+        - ``deal_weight``: reward for realized volume, normalized by capacity.
         - ``engagement_weight``: reward for not ending/abandoning negotiations.
         """
         terms = {"price_bonus": 0.0, "deal_bonus": 0.0, "engagement_bonus": 0.0}
@@ -903,13 +964,13 @@ class MyRewardFunction(DefaultRewardFunction):
 
             if is_consumer:
                 states = getattr(awi, "current_buy_states", {}) or {}
-                deals = _buy_agreement_prices(awi)
+                deals = buy_deals
                 reference, _ = _catalog_prices(awi)
                 # Buying below catalog is favorable.
                 sign = -1.0
             else:
                 states = getattr(awi, "current_sell_states", {}) or {}
-                deals = _sell_agreement_prices(awi)
+                deals = sell_deals
                 _, reference = _catalog_prices(awi)
                 # Selling above catalog is favorable.
                 sign = 1.0
@@ -924,15 +985,14 @@ class MyRewardFunction(DefaultRewardFunction):
                     )
                 terms["price_bonus"] = self.price_weight * price_bonus
 
-            partners = set(states.keys())
-            n_partners = max(len(partners), 1)
-
-            if self.deal_weight != 0.0:
-                n_deals = sum(
-                    1 for state in states.values() if state.agreement is not None
+            if deals and self.deal_weight != 0.0:
+                realized_qty = sum(q for _, q in deals)
+                n_lines = max(1.0, _safe_float(getattr(awi, "n_lines", 1.0), default=1.0))
+                terms["deal_bonus"] = self.deal_weight * float(
+                    np.clip(realized_qty / n_lines, 0.0, 1.0)
                 )
-                terms["deal_bonus"] = self.deal_weight * (n_deals / n_partners)
 
+            partners = set(states.keys())
             if partners and self.engagement_weight != 0.0:
                 engaged = sum(
                     1
@@ -946,7 +1006,7 @@ class MyRewardFunction(DefaultRewardFunction):
                     )
                 )
                 terms["engagement_bonus"] = self.engagement_weight * (
-                    engaged / n_partners
+                    engaged / max(len(partners), 1)
                 )
         except Exception:
             return {"price_bonus": 0.0, "deal_bonus": 0.0, "engagement_bonus": 0.0}
