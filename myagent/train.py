@@ -671,7 +671,6 @@ _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     },
     "WeakSupplierContext": {
         "deal_weight": 0.10,
-        "engagement_weight": 0.10,
         "need_weight": 0.20,
     },
     "StrongConsumerContext": {"price_weight": 0.20},
@@ -681,7 +680,6 @@ _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     },
     "WeakConsumerContext": {
         "deal_weight": 0.10,
-        "engagement_weight": 0.10,
         "need_weight": 0.20,
     },
 }
@@ -689,7 +687,7 @@ _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
 # Maps each reward-weight attribute to its environment variable and global
 # default. Single source of truth for both MyRewardFunction and the config dump.
 _REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
-    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 0.2),
+    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 3.0),
     "need_weight": ("REWARD_NEED_WEIGHT", 0.0),
     "shortfall_weight": ("REWARD_SHORTFALL_WEIGHT", 0.0),
     "overshoot_weight": ("REWARD_OVERSHOOT_WEIGHT", 0.0),
