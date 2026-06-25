@@ -13,6 +13,7 @@ from tabulate import tabulate
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+from scml_agents import get_agents
 
 def run(
     competitors=tuple(),
@@ -48,8 +49,13 @@ def run(
 
     """
 
+    winners = [
+        get_agents(y, track="oneshot", winners_only=True, as_class=False)[0]
+        for y in (2021, 2022, 2023)
+    ]
+
     if competition == "oneshot":
-        competitors = list(competitors) + list(DefaultAgentsOneShot2024)
+        competitors = list(competitors) + list(DefaultAgentsOneShot2024) + winners
     else:
         competitors = list(competitors) + list(DefaultAgentsStd2024)
 
@@ -97,8 +103,9 @@ def show_score_per_level(results):
     Path("figures").mkdir(parents=True, exist_ok=True)
     plt.savefig("figures/score_per_level.png", bbox_inches="tight")
 
-
 if __name__ == "__main__":
     import typer
 
     typer.run(run)
+
+
