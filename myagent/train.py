@@ -660,21 +660,9 @@ class TrainingDiagnosticsCallback(BaseCallback):
             )
 
 
-# Per-context default shaping weights that emulate the original per-context
-# reward functions. Keyed by context class name. A matching REWARD_* environment
-# variable always overrides the value here, so sweeps that set the env vars
-# explicitly are unaffected; the table only applies to plain training runs.
-#
-# Notes on the mapping from the old reward classes:
-#   - price_weight       <- old PRICE_SCALE (Strong=0.20, Balanced=0.10)
-#   - deal_weight        <- old DEAL_BONUS (Weak=0.10)
-#   - engagement_weight  <- old ENGAGEMENT_SCALE (Weak=0.10)
-#   - need_weight        <- the old shortfall penalty. The old term was
-#                           -SHORTFALL_SCALE * shortfall_ratio; `need_weight`
-#                           drives need_penalty (-w * unmet_need_scaled *
-#                           time_multiplier), which is the structural analog
-#                           (shortfall_weight instead scales by the monetary
-#                           current_shortfall_penalty and cannot match 0.10/0.20).
+# Per-context default shaping weights. Keyed by context class name.
+# A matching REWARD_* environment variable always overrides the value here,
+# so sweeps that set the env vars explicitly are unaffected;
 _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     "StrongSupplierContext": {"price_weight": 0.20},
     "BalancedSupplierContext": {
@@ -701,7 +689,7 @@ _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
 # Maps each reward-weight attribute to its environment variable and global
 # default. Single source of truth for both MyRewardFunction and the config dump.
 _REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
-    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 0.1),
+    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 1.0),
     "need_weight": ("REWARD_NEED_WEIGHT", 0.0),
     "shortfall_weight": ("REWARD_SHORTFALL_WEIGHT", 0.0),
     "overshoot_weight": ("REWARD_OVERSHOOT_WEIGHT", 0.0),
@@ -776,8 +764,6 @@ class MyRewardFunction(DefaultRewardFunction):
         return float(getattr(awi, "current_score", 0.0))
 
     def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: float):
-        base_reward = _safe_float(super().__call__(awi, action, info))
-
         previous_score = _safe_float(info)
         current_score = _safe_float(getattr(awi, "current_score", previous_score))
         score_delta = current_score - previous_score
@@ -786,19 +772,17 @@ class MyRewardFunction(DefaultRewardFunction):
         reward_terms = self._calculate_reward_terms(awi)
         context_terms = self._calculate_context_shaping(awi, action)
 
-        shaping_reward = (
+        final_reward = (
             score_delta_bonus
             + reward_terms["need_penalty"] # type: ignore
-            + reward_terms["shortfall_penalty_term"] # type: ignore
-            + reward_terms["overshoot_penalty"] # type: ignore
-            + reward_terms["disposal_penalty_term"] # type: ignore
+            + reward_terms["shortfall_penalty_term"] 
+            + reward_terms["overshoot_penalty"] 
+            + reward_terms["disposal_penalty_term"] 
             + reward_terms["productivity_bonus"]
             + context_terms["price_bonus"]
             + context_terms["deal_bonus"]
             + context_terms["engagement_bonus"]
-        )  # type: ignore
-
-        final_reward = base_reward + shaping_reward
+        )  
 
         if self.log_reward_components:
             self._log_reward_components(
@@ -806,10 +790,8 @@ class MyRewardFunction(DefaultRewardFunction):
                 action=action,
                 previous_score=previous_score,
                 current_score=current_score,
-                base_reward=base_reward,
                 score_delta=score_delta,
                 score_delta_bonus=score_delta_bonus,
-                shaping_reward=shaping_reward,
                 final_reward=final_reward,
                 reward_terms=reward_terms,
                 context_terms=context_terms,
@@ -1031,8 +1013,6 @@ class MyRewardFunction(DefaultRewardFunction):
                 "deal_bonus",
                 "engagement_weight",
                 "engagement_bonus",
-                "shaping_reward",
-                "base_reward",
                 "final_reward",
                 "current_disposal_cost",
                 "current_shortfall_penalty",
@@ -1068,10 +1048,8 @@ class MyRewardFunction(DefaultRewardFunction):
         action: dict[str, SAOResponse],
         previous_score: float,
         current_score: float,
-        base_reward: float,
         score_delta: float,
         score_delta_bonus: float,
-        shaping_reward: float,
         final_reward: float,
         reward_terms: dict[str, float | str],
         context_terms: dict[str, float],
@@ -1121,8 +1099,6 @@ class MyRewardFunction(DefaultRewardFunction):
                 "deal_bonus": context_terms["deal_bonus"],
                 "engagement_weight": self.engagement_weight,
                 "engagement_bonus": context_terms["engagement_bonus"],
-                "shaping_reward": shaping_reward,
-                "base_reward": base_reward,
                 "final_reward": final_reward,
                 "current_disposal_cost": reward_terms["current_disposal_cost"],
                 "current_shortfall_penalty": reward_terms["current_shortfall_penalty"],
