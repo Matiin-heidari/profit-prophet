@@ -1,0 +1,50 @@
+JobID                     JobName      State ExitCode    Elapsed     MaxRSS  AllocCPUS 
+------------ -------------------- ---------- -------- ---------- ---------- ---------- 
+14486516_0              ppo_sweep  COMPLETED      0:0   00:31:07                    48 
+14486516_0.+                batch  COMPLETED      0:0   00:31:07  22039864K         48 
+14486516_0.+               extern  COMPLETED      0:0   00:31:07                    48 
+14486516_1              ppo_sweep  COMPLETED      0:0   00:29:55                    48 
+14486516_1.+                batch  COMPLETED      0:0   00:29:55  23265492K         48 
+14486516_1.+               extern  COMPLETED      0:0   00:29:55                    48 
+14486516_2              ppo_sweep  COMPLETED      0:0   00:29:12                    48 
+14486516_2.+                batch  COMPLETED      0:0   00:29:12  22562988K         48 
+14486516_2.+               extern  COMPLETED      0:0   00:29:12                    48 
+14486516_3              ppo_sweep  COMPLETED      0:0   00:29:16                    48 
+14486516_3.+                batch  COMPLETED      0:0   00:29:16  23066388K         48 
+14486516_3.+               extern  COMPLETED      0:0   00:29:16                    48 
+14486516_4              ppo_sweep  COMPLETED      0:0   00:29:23                    48 
+14486516_4.+                batch  COMPLETED      0:0   00:29:23  22624684K         48 
+14486516_4.+               extern  COMPLETED      0:0   00:29:23                    48 
+14486516_5              ppo_sweep  COMPLETED      0:0   00:27:27                    48 
+14486516_5.+                batch  COMPLETED      0:0   00:27:27  21461436K         48 
+14486516_5.+               extern  COMPLETED      0:0   00:27:27                    48 
+14486516_6              ppo_sweep  COMPLETED      0:0   00:27:33                    48 
+14486516_6.+                batch  COMPLETED      0:0   00:27:33  21741664K         48 
+14486516_6.+               extern  COMPLETED      0:0   00:27:33                    48 
+14486516_7              ppo_sweep  COMPLETED      0:0   00:27:03                    48 
+14486516_7.+                batch  COMPLETED      0:0   00:27:03  22711048K         48 
+14486516_7.+               extern  COMPLETED      0:0   00:27:03                    48 
+14486516_8              ppo_sweep  COMPLETED      0:0   00:28:08                    48 
+14486516_8.+                batch  COMPLETED      0:0   00:28:08  22073352K         48 
+14486516_8.+               extern  COMPLETED      0:0   00:28:08                    48 
+14486516_9              ppo_sweep  COMPLETED      0:0   00:27:33                    48 
+14486516_9.+                batch  COMPLETED      0:0   00:27:33  23213516K         48 
+14486516_9.+               extern  COMPLETED      0:0   00:27:33                    48 
+14486516_10             ppo_sweep  COMPLETED      0:0   00:29:36                    48 
+14486516_10+                batch  COMPLETED      0:0   00:29:36  23232880K         48 
+14486516_10+               extern  COMPLETED      0:0   00:29:36                    48 
+14486516_11             ppo_sweep  COMPLETED      0:0   00:29:59                    48 
+14486516_11+                batch  COMPLETED      0:0   00:29:59  24035752K         48 
+14486516_11+               extern  COMPLETED      0:0   00:29:59                    48 
+14486516_12             ppo_sweep  COMPLETED      0:0   00:28:20                    48 
+14486516_12+                batch  COMPLETED      0:0   00:28:20  22355356K         48 
+14486516_12+               extern  COMPLETED      0:0   00:28:20                    48 
+14486516_13             ppo_sweep  COMPLETED      0:0   00:27:12                    48 
+14486516_13+                batch  COMPLETED      0:0   00:27:12  23509444K         48 
+14486516_13+               extern  COMPLETED      0:0   00:27:12                    48 
+14486516_14             ppo_sweep  COMPLETED      0:0   00:29:24                    48 
+14486516_14+                batch  COMPLETED      0:0   00:29:24  23598520K         48 
+14486516_14+               extern  COMPLETED      0:0   00:29:24                    48 
+14486516_15             ppo_sweep  COMPLETED      0:0   00:26:54                    48 
+14486516_15+                batch  COMPLETED      0:0   00:26:54  22704680K         48 
+14486516_15+               extern  COMPLETED      0:0   00:26:54                    48 
