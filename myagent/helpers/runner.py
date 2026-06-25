@@ -9,7 +9,7 @@ from scml.utils import (
     DefaultAgentsOneShot2024,
 )
 from tabulate import tabulate
-
+from scml_agents import get_agents
 
 def run(
     competitors=tuple(),
@@ -45,8 +45,13 @@ def run(
 
     """
 
+    winners = [
+        get_agents(y, track="oneshot", winners_only=True, as_class=False)[0]
+        for y in (2021, 2022, 2023)
+    ]
+
     if competition == "oneshot":
-        competitors = list(competitors) + list(DefaultAgentsOneShot2024)
+        competitors = list(competitors) + list(DefaultAgentsOneShot2024) + winners
     else:
         competitors = list(competitors) + list(DefaultAgentsStd2024)
 
@@ -73,8 +78,9 @@ def run(
     print(tabulate(results.total_scores, headers="keys", tablefmt="psql"))  # type: ignore
     print(f"Finished in {humanize_time(time.perf_counter() - start)}")
 
-
 if __name__ == "__main__":
     import typer
 
     typer.run(run)
+
+
