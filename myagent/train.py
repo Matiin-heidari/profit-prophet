@@ -1170,16 +1170,14 @@ def dump_object(obj):
 
     return data
 
-def make_env(context_name, log: bool = False) -> OneShotEnv:
+def make_env(context_name, log: bool | None = None) -> OneShotEnv:
+    # When `log` is not passed explicitly, fall back to the LOG_WORLD env var
+    # ("1" enables the verbose fail-fast debugging profile; default off).
+    if log is None:
+        log = os.environ.get("LOG_WORLD", "0") != "0"
+
     # World construction params. These are passed to the world via the
-    # context's `world_params` (OneShotEnv builds the world from the context
-    # in reset(), so there is no other place to inject them).
-    #
-    # NOTE: `debug=True` is a strict/fail-fast mode that *forces* all four
-    # ignore_*_exceptions back to False, so the two are mutually exclusive.
-    # The default (training) path uses debug=False + ignore exceptions so a
-    # rare agent/negotiation error logs-and-continues instead of killing a
-    # long run. The `log=True` path is the fail-fast debugging profile.
+    # context's `world_params`
     if log:
         world_params: dict[str, Any] = dict(
             no_logs=False,
@@ -1360,6 +1358,8 @@ def main(ntrain: int = NTRAINING):
     print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
     print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
     print(f"rl_agent_code: {_rl_agent_code()}")
+    log_world = os.environ.get("LOG_WORLD", "0") != "0"
+    print(f"log_world: {log_world} ({'debug/fail-fast' if log_world else 'robust'})")
 
     print("=== Resolved reward weights (per context) ===")
     for context_name in CONTEXTS:
