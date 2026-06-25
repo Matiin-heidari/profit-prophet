@@ -10,7 +10,7 @@ import numpy as np
 from negmas.sao import SAOResponse, ResponseType
 from rich import print
 from scml.oneshot.awi import OneShotAWI
-from scml.oneshot.context import GeneralContext, StrongSupplierContext, BalancedSupplierContext, WeakSupplierContext, StrongConsumerContext, BalancedConsumerContext, WeakConsumerContext
+from scml.oneshot.context import GeneralContext
 from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
@@ -397,221 +397,6 @@ def _shortfall_buy_ratio(awi: OneShotAWI) -> float:
 
 
 
-class _BaseReward(DefaultRewardFunction):
-    """Base class for all context-specific reward functions.
-
-    ``__call__`` delegates entirely to ``_extra``, which subclasses override.
-    """
-
-    def __init__(self, context: GeneralContext) -> None:
-        super().__init__()
-        self.context = context
-
-
-    def before_action(self, awi: OneShotAWI) -> float:  
-        return 0
-
-    def __call__(
-        self,
-        awi: OneShotAWI,
-        action: dict[str, SAOResponse],
-        info: float,
-    ) -> float:
-
-        extra = self._extra(awi, action, info)
-        return extra
-
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
-        """Context-specific shaping term. Defaults to score delta. Should usually be overridden."""
-        return super().__call__(awi, action, info)
-
-
-class StrongSupplierRewardFunction(_BaseReward):
-    """Reward for a *strong* supplier position. Meaning the consumers need our products more than we need them.
-    We wait for a good price, reward prices above and penalise prices below the catalogue price.
-
-    """
- 
-    PRICE_SCALE = 0.20    # max bonus/penalty magnitude per agreement
- 
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
-        try:
-            _, catalog_out = _catalog_prices(awi)
-            deals = _sell_agreement_prices(awi)
-            total_qty = sum(q for _, q in deals)
-            bonus = 0.0
-            for price, qty in deals:
-                ratio = (price - catalog_out) / max(catalog_out, 1e-6)
-                bonus += float(np.clip(ratio, -0.10, 0.10)) * self.PRICE_SCALE * (qty / max(total_qty, 1))
-            return bonus
-        except Exception:
-            return 0.0
-
-
- 
-
-class WeakSupplierRewardFunction(_BaseReward):
-    """Reward for a *weak* supplier position. Demand for the product is low and
-    unsold products incur a penalty. We penalise shortfall, reward each closed deal,
-    and reward engagement (not ending sell negotiations early).
-    """
-
-    SHORTFALL_SCALE = 0.20
-    DEAL_BONUS = 0.10
-    ENGAGEMENT_SCALE = 0.10
-
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
-        try:
-            shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_sell_ratio(awi)
-
-            sell_partners = set(awi.current_sell_states.keys())
-            n_deals = sum(
-                1 for state in awi.current_sell_states.values()
-                if state.agreement is not None
-            )
-            deal_bonus = self.DEAL_BONUS * (n_deals / max(len(sell_partners), 1))
-            if sell_partners:
-                engaged = sum(
-                    1 for pid, r in action.items()
-                    if pid in sell_partners
-                    and r.response not in (ResponseType.END_NEGOTIATION, ResponseType.NO_RESPONSE, ResponseType.WAIT)
-                )
-                engagement_bonus = self.ENGAGEMENT_SCALE * (engaged / len(sell_partners))
-            else:
-                engagement_bonus = 0.0
-
-            return shortfall_penalty + deal_bonus + engagement_bonus
-        except Exception:
-            return 0.0
-
-
-
-class BalancedSupplierRewardFunction(_BaseReward):
-    """Reward for a *balanced* supplier position. Combines a moderate reward for above-catalog sells
-    with a moderate shortfall penalty.
-
-    Small price deviation bonus (half the StrongSupplier scale) plus a
-    small flat per-agreement bonus to avoid zero-volume solutions."""
-
-    PRICE_SCALE = 0.10
-    SHORTFALL_SCALE = 0.10
- 
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
-        try:
-            _, catalog_out = _catalog_prices(awi)
- 
-            deals = _sell_agreement_prices(awi)
-            price_bonus = 0.0
-            if deals:
-                total_qty = sum(q for _, q in deals)
-                mean_price = sum(p * q for p, q in deals) / max(total_qty, 1)
-                mean_ratio = (mean_price - catalog_out) / max(catalog_out, 1e-6)
-                price_bonus = float(np.clip(mean_ratio, -0.05, 0.05)) * self.PRICE_SCALE
- 
-            shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_sell_ratio(awi)
- 
-            return price_bonus + shortfall_penalty
-        except Exception:
-            return 0.0
-
-class StrongConsumerRewardFunction(_BaseReward):
-    """Reward for a *strong* consumer position. More producers than consumers. We aim for below-catalog prices.
-     """
-
-    PRICE_SCALE = 0.20
- 
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
-        try:
-            catalog_in, _ = _catalog_prices(awi)
-            deals = _buy_agreement_prices(awi)
-            total_qty = sum(q for _, q in deals)
-            bonus = 0.0
-            for price, qty in deals:
-                ratio = (catalog_in - price) / max(catalog_in, 1e-6)
-                bonus += float(np.clip(ratio, -0.10, 0.10)) * self.PRICE_SCALE * (qty / max(total_qty, 1))
-            return bonus
-        except Exception:
-            return 0.0
-
-
-class WeakConsumerRewardFunction(_BaseReward):
-    """Reward shaping for a *weak* consumer position. Input supply is scarce. Failure to secure enough
-    inputs triggers shortfall penalties and prevents fulfilment of output contracts.
-    We penalise shortfall, reward each closed deal, and reward engagement (not ending negotiations early).
-    """
-
-    SHORTFALL_SCALE = 0.20
-    DEAL_BONUS = 0.10
-    ENGAGEMENT_SCALE = 0.10
-
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
-        try:
-            shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_buy_ratio(awi)
-
-            buy_partners = set(awi.current_buy_states.keys())
-            n_deals = sum(
-                1 for state in awi.current_buy_states.values()
-                if state.agreement is not None
-            )
-            deal_bonus = self.DEAL_BONUS * (n_deals / max(len(buy_partners), 1))
-            if buy_partners:
-                engaged = sum(
-                    1 for pid, r in action.items()
-                    if pid in buy_partners
-                    and r.response not in (ResponseType.END_NEGOTIATION, ResponseType.NO_RESPONSE, ResponseType.WAIT)
-                )
-                engagement_bonus = self.ENGAGEMENT_SCALE * (engaged / len(buy_partners))
-            else:
-                engagement_bonus = 0.0
-
-            return shortfall_penalty + deal_bonus + engagement_bonus
-        except Exception:
-            return 0.0
-
-class BalancedConsumerRewardFunction(_BaseReward):
-    """Reward for a *balanced* supplier position. Combines a moderate reward for below-catalog buys
-    with a moderate shortfall penalty.
-    """
-
-    PRICE_SCALE = 0.10
-    SHORTFALL_SCALE = 0.10
-
-    def _extra(self, awi: OneShotAWI, action: dict[str, SAOResponse], info) -> float:
-        try:
-            catalog_in, _ = _catalog_prices(awi)
-
-            deals = _buy_agreement_prices(awi)
-            price_bonus = 0.0
-            if deals:
-                total_qty = sum(q for _, q in deals)
-                mean_price = sum(p * q for p, q in deals) / max(total_qty, 1)
-                mean_ratio = (catalog_in - mean_price) / max(catalog_in, 1e-6)
-                price_bonus = float(np.clip(mean_ratio, -0.05, 0.05)) * self.PRICE_SCALE
-
-            shortfall_penalty = -self.SHORTFALL_SCALE * _shortfall_buy_ratio(awi)
-
-            return price_bonus + shortfall_penalty
-        except Exception:
-            return 0.0
-
-_CONTEXT_TO_REWARD: dict[type, type[_BaseReward]] = {
-    StrongSupplierContext: StrongSupplierRewardFunction,
-    BalancedSupplierContext: BalancedSupplierRewardFunction,
-    WeakSupplierContext: WeakSupplierRewardFunction,
-    StrongConsumerContext: StrongConsumerRewardFunction,
-    BalancedConsumerContext: BalancedConsumerRewardFunction,
-    WeakConsumerContext: WeakConsumerRewardFunction,
-}
-
-def make_reward_function(context: GeneralContext) -> _BaseReward:
-    """Return the reward function best suited to *context*.
-
-    Falls back to :class:`_BaseReward` (score + delta only) for any context
-    type not in the registry.
-    """
-    reward_cls = _CONTEXT_TO_REWARD.get(type(context), _BaseReward)
-    return reward_cls(context)
-
 class ProgressCallback(BaseCallback):
     """Send training progress to the main process."""
 
@@ -907,6 +692,19 @@ class MyRewardFunction(DefaultRewardFunction):
             os.environ.get("REWARD_NEED_NORMALIZER", "0.0")
         )
 
+        # Context-specific shaping weights (integrated from the per-context
+        # reward functions). Side (buy/sell) is auto-detected from the context;
+        # these weights control the magnitude of each shaping signal.
+        self.price_weight = float(
+            os.environ.get("REWARD_PRICE_WEIGHT", "0.0")
+        )
+        self.deal_weight = float(
+            os.environ.get("REWARD_DEAL_WEIGHT", "0.0")
+        )
+        self.engagement_weight = float(
+            os.environ.get("REWARD_ENGAGEMENT_WEIGHT", "0.0")
+        )
+
         self.log_reward_components = (
             os.environ.get("LOG_REWARD_COMPONENTS", "1") != "0"
         )
@@ -935,14 +733,18 @@ class MyRewardFunction(DefaultRewardFunction):
         score_delta_bonus = self.score_delta_weight * score_delta
 
         reward_terms = self._calculate_reward_terms(awi)
+        context_terms = self._calculate_context_shaping(awi, action)
 
-        shaping_reward = ( 
+        shaping_reward = (
             score_delta_bonus
             + reward_terms["need_penalty"] # type: ignore
             + reward_terms["shortfall_penalty_term"] # type: ignore
             + reward_terms["overshoot_penalty"] # type: ignore
             + reward_terms["disposal_penalty_term"] # type: ignore
             + reward_terms["productivity_bonus"]
+            + context_terms["price_bonus"]
+            + context_terms["deal_bonus"]
+            + context_terms["engagement_bonus"]
         )  # type: ignore
 
         final_reward = base_reward + shaping_reward
@@ -959,6 +761,7 @@ class MyRewardFunction(DefaultRewardFunction):
                 shaping_reward=shaping_reward,
                 final_reward=final_reward,
                 reward_terms=reward_terms,
+                context_terms=context_terms,
             )
 
         return final_reward
@@ -1047,6 +850,78 @@ class MyRewardFunction(DefaultRewardFunction):
             "productivity_bonus": productivity_bonus,
         }
 
+    def _calculate_context_shaping(
+        self, awi: OneShotAWI, action: dict[str, SAOResponse]
+    ) -> dict[str, float]:
+        """Side-aware price/deal/engagement shaping.
+
+        Integrates the former per-context reward functions into the configurable
+        base. The trading *side* (sell for suppliers, buy for consumers) and the
+        "good price" direction are auto-detected from the context name; the three
+        weights control how strongly each signal contributes:
+
+        - ``price_weight``: quantity-weighted reward for agreements that beat the
+          catalog price (above catalog when selling, below when buying).
+        - ``deal_weight``: reward per closed agreement, normalized by partners.
+        - ``engagement_weight``: reward for not ending/abandoning negotiations.
+        """
+        terms = {"price_bonus": 0.0, "deal_bonus": 0.0, "engagement_bonus": 0.0}
+
+        try:
+            is_consumer = "Consumer" in type(self.context).__name__
+
+            if is_consumer:
+                states = getattr(awi, "current_buy_states", {}) or {}
+                deals = _buy_agreement_prices(awi)
+                reference, _ = _catalog_prices(awi)
+                # Buying below catalog is favorable.
+                sign = -1.0
+            else:
+                states = getattr(awi, "current_sell_states", {}) or {}
+                deals = _sell_agreement_prices(awi)
+                _, reference = _catalog_prices(awi)
+                # Selling above catalog is favorable.
+                sign = 1.0
+
+            if deals and self.price_weight != 0.0:
+                total_qty = sum(q for _, q in deals)
+                price_bonus = 0.0
+                for price, qty in deals:
+                    ratio = sign * (price - reference) / max(reference, 1e-6)
+                    price_bonus += (
+                        float(np.clip(ratio, -0.10, 0.10)) * (qty / max(total_qty, 1))
+                    )
+                terms["price_bonus"] = self.price_weight * price_bonus
+
+            partners = set(states.keys())
+            n_partners = max(len(partners), 1)
+
+            if self.deal_weight != 0.0:
+                n_deals = sum(
+                    1 for state in states.values() if state.agreement is not None
+                )
+                terms["deal_bonus"] = self.deal_weight * (n_deals / n_partners)
+
+            if partners and self.engagement_weight != 0.0:
+                engaged = sum(
+                    1
+                    for pid, response in action.items()
+                    if pid in partners
+                    and response.response
+                    not in (
+                        ResponseType.END_NEGOTIATION,
+                        ResponseType.NO_RESPONSE,
+                        ResponseType.WAIT,
+                    )
+                )
+                terms["engagement_bonus"] = self.engagement_weight * (
+                    engaged / n_partners
+                )
+        except Exception:
+            return {"price_bonus": 0.0, "deal_bonus": 0.0, "engagement_bonus": 0.0}
+
+        return terms
+
     def _open_reward_log(self) -> None:
         """Open one reward component log per worker process."""
         run_name = os.environ.get("RUN_NAME", "default")
@@ -1099,6 +974,12 @@ class MyRewardFunction(DefaultRewardFunction):
                 "productivity_weight",
                 "productivity_proxy",
                 "productivity_bonus",
+                "price_weight",
+                "price_bonus",
+                "deal_weight",
+                "deal_bonus",
+                "engagement_weight",
+                "engagement_bonus",
                 "shaping_reward",
                 "base_reward",
                 "final_reward",
@@ -1142,6 +1023,7 @@ class MyRewardFunction(DefaultRewardFunction):
         shaping_reward: float,
         final_reward: float,
         reward_terms: dict[str, float | str],
+        context_terms: dict[str, float],
     ) -> None:
         """Write one reward component row."""
         if self.reward_log_writer is None:
@@ -1182,6 +1064,12 @@ class MyRewardFunction(DefaultRewardFunction):
                 "productivity_weight": self.productivity_weight,
                 "productivity_proxy": reward_terms["productivity_proxy"],
                 "productivity_bonus": reward_terms["productivity_bonus"],
+                "price_weight": self.price_weight,
+                "price_bonus": context_terms["price_bonus"],
+                "deal_weight": self.deal_weight,
+                "deal_bonus": context_terms["deal_bonus"],
+                "engagement_weight": self.engagement_weight,
+                "engagement_bonus": context_terms["engagement_bonus"],
                 "shaping_reward": shaping_reward,
                 "base_reward": base_reward,
                 "final_reward": final_reward,
@@ -1285,7 +1173,7 @@ def make_env(context_name, log: bool = False) -> OneShotEnv:
     return OneShotEnv(
         action_manager=FlexibleActionManager(context=context),
         observation_manager=MyObservationManager(context=context, continuous=True),  # type: ignore
-        reward_function=make_reward_function(context=context),
+        reward_function=MyRewardFunction(context=context),
         context=context,
         extra_checks=False,
     )
