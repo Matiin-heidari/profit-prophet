@@ -660,6 +660,79 @@ class TrainingDiagnosticsCallback(BaseCallback):
             )
 
 
+# Per-context default shaping weights that emulate the original per-context
+# reward functions. Keyed by context class name. A matching REWARD_* environment
+# variable always overrides the value here, so sweeps that set the env vars
+# explicitly are unaffected; the table only applies to plain training runs.
+#
+# Notes on the mapping from the old reward classes:
+#   - price_weight       <- old PRICE_SCALE (Strong=0.20, Balanced=0.10)
+#   - deal_weight        <- old DEAL_BONUS (Weak=0.10)
+#   - engagement_weight  <- old ENGAGEMENT_SCALE (Weak=0.10)
+#   - need_weight        <- the old shortfall penalty. The old term was
+#                           -SHORTFALL_SCALE * shortfall_ratio; `need_weight`
+#                           drives need_penalty (-w * unmet_need_scaled *
+#                           time_multiplier), which is the structural analog
+#                           (shortfall_weight instead scales by the monetary
+#                           current_shortfall_penalty and cannot match 0.10/0.20).
+_CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
+    "StrongSupplierContext": {"price_weight": 0.20},
+    "BalancedSupplierContext": {
+        "price_weight": 0.10,
+        "need_weight": 0.10
+    },
+    "WeakSupplierContext": {
+        "deal_weight": 0.10,
+        "engagement_weight": 0.10,
+        "need_weight": 0.20,
+    },
+    "StrongConsumerContext": {"price_weight": 0.20},
+    "BalancedConsumerContext": {
+        "price_weight": 0.10,
+        "need_weight": 0.10
+    },
+    "WeakConsumerContext": {
+        "deal_weight": 0.10,
+        "engagement_weight": 0.10,
+        "need_weight": 0.20,
+    },
+}
+
+# Maps each reward-weight attribute to its environment variable and global
+# default. Single source of truth for both MyRewardFunction and the config dump.
+_REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
+    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 0.1),
+    "need_weight": ("REWARD_NEED_WEIGHT", 0.0),
+    "shortfall_weight": ("REWARD_SHORTFALL_WEIGHT", 0.0),
+    "overshoot_weight": ("REWARD_OVERSHOOT_WEIGHT", 0.0),
+    "disposal_weight": ("REWARD_DISPOSAL_WEIGHT", 0.0),
+    "productivity_weight": ("REWARD_PRODUCTIVITY_WEIGHT", 0.0),
+    "time_pressure_weight": ("REWARD_TIME_PRESSURE_WEIGHT", 1.0),
+    "need_normalizer": ("REWARD_NEED_NORMALIZER", 0.0),
+    "price_weight": ("REWARD_PRICE_WEIGHT", 0.0),
+    "deal_weight": ("REWARD_DEAL_WEIGHT", 0.0),
+    "engagement_weight": ("REWARD_ENGAGEMENT_WEIGHT", 0.0),
+}
+
+
+def resolve_reward_weights(context_name: str) -> dict[str, float]:
+    """Resolve all reward weights for a context.
+
+    Precedence: environment variable (if set) > per-context default table >
+    global default.
+    """
+    context_defaults = _CONTEXT_DEFAULT_WEIGHTS.get(context_name, {})
+    resolved: dict[str, float] = {}
+
+    for attr, (env_key, global_default) in _REWARD_WEIGHT_ENV.items():
+        if env_key in os.environ:
+            resolved[attr] = float(os.environ[env_key])
+        else:
+            resolved[attr] = float(context_defaults.get(attr, global_default))
+
+    return resolved
+
+
 class MyRewardFunction(DefaultRewardFunction):
     """Reward shaping with configurable terms."""
 
@@ -667,43 +740,21 @@ class MyRewardFunction(DefaultRewardFunction):
         super().__init__()
         self.context = context
 
-        self.score_delta_weight = float(
-            os.environ.get("REWARD_SCORE_DELTA_WEIGHT", "0.1")
-        )
-        self.need_weight = float(
-            os.environ.get("REWARD_NEED_WEIGHT", "0.0")
-        )
-        self.shortfall_weight = float(
-            os.environ.get("REWARD_SHORTFALL_WEIGHT", "0.0")
-        )
-        self.overshoot_weight = float(
-            os.environ.get("REWARD_OVERSHOOT_WEIGHT", "0.0")
-        )
-        self.disposal_weight = float(
-            os.environ.get("REWARD_DISPOSAL_WEIGHT", "0.0")
-        )
-        self.productivity_weight = float(
-            os.environ.get("REWARD_PRODUCTIVITY_WEIGHT", "0.0")
-        )
-        self.time_pressure_weight = float(
-            os.environ.get("REWARD_TIME_PRESSURE_WEIGHT", "1.0")
-        )
-        self.need_normalizer = float(
-            os.environ.get("REWARD_NEED_NORMALIZER", "0.0")
-        )
+        weights = resolve_reward_weights(type(context).__name__)
 
-        # Context-specific shaping weights (integrated from the per-context
-        # reward functions). Side (buy/sell) is auto-detected from the context;
-        # these weights control the magnitude of each shaping signal.
-        self.price_weight = float(
-            os.environ.get("REWARD_PRICE_WEIGHT", "0.0")
-        )
-        self.deal_weight = float(
-            os.environ.get("REWARD_DEAL_WEIGHT", "0.0")
-        )
-        self.engagement_weight = float(
-            os.environ.get("REWARD_ENGAGEMENT_WEIGHT", "0.0")
-        )
+        self.score_delta_weight = weights["score_delta_weight"]
+        self.need_weight = weights["need_weight"]
+        self.shortfall_weight = weights["shortfall_weight"]
+        self.overshoot_weight = weights["overshoot_weight"]
+        self.disposal_weight = weights["disposal_weight"]
+        self.productivity_weight = weights["productivity_weight"]
+        self.time_pressure_weight = weights["time_pressure_weight"]
+        self.need_normalizer = weights["need_normalizer"]
+
+        # Context-specific shaping weights. Side (buy/sell) is auto-detected from the context.
+        self.price_weight = weights["price_weight"]
+        self.deal_weight = weights["deal_weight"]
+        self.engagement_weight = weights["engagement_weight"]
 
         self.log_reward_components = (
             os.environ.get("LOG_REWARD_COMPONENTS", "1") != "0"
@@ -1323,19 +1374,17 @@ def main(ntrain: int = NTRAINING):
     print(f"ntrain: {ntrain}")
     print(f"contexts: {CONTEXTS}")
     print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
-    #print(f"eval_freq: {os.environ.get('EVAL_FREQ', f'{max(ntrain // 5, 1)}')}")
-    #print(f"n_eval_episodes: {os.environ.get('N_EVAL_EPISODES', '3')}")
-    #print(f"reward_score_delta_weight: {os.environ.get('REWARD_SCORE_DELTA_WEIGHT', '0.1')}")
-    #print(f"reward_need_weight: {os.environ.get('REWARD_NEED_WEIGHT', '0.0')}")
-    #print(f"reward_shortfall_weight: {os.environ.get('REWARD_SHORTFALL_WEIGHT', '0.0')}")
-    #print(f"reward_overshoot_weight: {os.environ.get('REWARD_OVERSHOOT_WEIGHT', '0.0')}")
-    #print(f"reward_disposal_weight: {os.environ.get('REWARD_DISPOSAL_WEIGHT', '0.0')}")
-    #print(f"reward_productivity_weight: {os.environ.get('REWARD_PRODUCTIVITY_WEIGHT', '0.0')}")
-    #print(f"reward_time_pressure_weight: {os.environ.get('REWARD_TIME_PRESSURE_WEIGHT', '1.0')}")
-    #print(f"reward_need_normalizer: {os.environ.get('REWARD_NEED_NORMALIZER', '0.0')}")
     print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
     print(f"rl_agent_code: {_rl_agent_code()}")
-    
+
+    print("=== Resolved reward weights (per context) ===")
+    for context_name in CONTEXTS:
+        weights = resolve_reward_weights(context_name)
+        nonzero = {
+            attr: value for attr, value in weights.items() if value != 0.0
+        }
+        print(f"{context_name}: {nonzero}")
+
 
     queue = Queue()
 
