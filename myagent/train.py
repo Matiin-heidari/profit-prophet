@@ -447,6 +447,19 @@ class ProgressCallback(BaseCallback):
 class EvaluationCallback(BaseCallback):
     """Log evaluation metrics to TensorBoard."""
 
+    # Headline metrics surfaced in their own dashboard category. The "0_" prefix
+    # sorts this group to the top in TensorBoard (categories are ordered
+    # alphabetically by the tag prefix before the first "/").
+    KEY_METRICS = (
+        "score",
+        "my_score",
+        "my_rank",
+        "score_gap",
+        "score_gap_vs_best_opponent",
+        "opponent_score_mean",
+        "best_opponent_score",
+    )
+
     def __init__(
         self,
         context_name: str,
@@ -484,6 +497,10 @@ class EvaluationCallback(BaseCallback):
                     continue
 
                 mean_value = float(np.mean(values))
+
+                # Surface the most important metrics in a top-sorted category.
+                if metric_name in self.KEY_METRICS:
+                    self.logger.record(f"0_key/{metric_name}", mean_value)
 
                 self.logger.record(f"eval/{metric_name}", mean_value)
                 self.logger.record(f"eval/{metric_name}_mean", mean_value)
