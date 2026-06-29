@@ -12,7 +12,6 @@ from pathlib import Path
 from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
-from scml.oneshot.rl.observation import FlexibleObservationManager
 
 from .common import (
     ALL_CONTEXTS,
@@ -61,4 +60,4 @@ class MyAgent(OneShotRLAgent):
 if __name__ == "__main__":
     from .helpers.runner import run
 
-    run([MyAgent], n_steps=30, n_configs=10)
+    run([MyAgent])

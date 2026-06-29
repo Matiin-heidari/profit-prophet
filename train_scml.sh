@@ -2,7 +2,7 @@
 #SBATCH --job-name=scml_train
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
-#SBATCH --time=05:00:00
+#SBATCH --time=03:00:00
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=96G
 #SBATCH --partition=kisski
