@@ -734,18 +734,20 @@ class TrainingDiagnosticsCallback(BaseCallback):
 # Per-context default shaping weights. Keyed by context class name.
 # A matching REWARD_* environment variable always overrides the value here,
 # so sweeps that set the env vars explicitly are unaffected;
+# Profit-aligned defaults: `margin_weight` is the primary dense signal (rewards
+# realized per-deal profit margin), with a small `need_weight` floor so the agent
+# still trades enough to avoid shortfall/disposal even when margins are thin.
+# `need_weight` is a context-specific floor: higher where shortfall/disposal risk
+# is higher. Strong positions have pricing leverage and sell/buy easily, so margin
+# leads; Weak positions face scarce demand/supply, so coverage matters more (a
+# thin- or negative-margin deal can still beat a worse shortfall/disposal cost).
 _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
-    # Strong: price is the primary (quality) driver; a small need term gives a
-    # dense gradient toward trading (price alone only pays once a deal closes).
-    "StrongSupplierContext": {"price_weight": 0.50, "need_weight": 0.05},
-    "StrongConsumerContext": {"price_weight": 0.50, "need_weight": 0.05},
-    # Balanced: price and coverage at moderate, comparable scale.
-    "BalancedSupplierContext": {"price_weight": 0.30, "need_weight": 0.05},
-    "BalancedConsumerContext": {"price_weight": 0.30, "need_weight": 0.05},
-    # Weak: realized-volume (deal) is the main signal; need kept small so it no
-    # longer dominates every other term.
-    "WeakSupplierContext": {"deal_weight": 0.20, "need_weight": 0.05},
-    "WeakConsumerContext": {"deal_weight": 0.20, "need_weight": 0.05},
+    "StrongSupplierContext": {"margin_weight": 0.30, "need_weight": 0.02},
+    "StrongConsumerContext": {"margin_weight": 0.30, "need_weight": 0.02},
+    "BalancedSupplierContext": {"margin_weight": 0.30, "need_weight": 0.05},
+    "BalancedConsumerContext": {"margin_weight": 0.30, "need_weight": 0.05},
+    "WeakSupplierContext": {"margin_weight": 0.30, "need_weight": 0.10},
+    "WeakConsumerContext": {"margin_weight": 0.30, "need_weight": 0.10},
 }
 
 # Maps each reward-weight attribute to its environment variable and global
@@ -762,6 +764,7 @@ _REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
     "price_weight": ("REWARD_PRICE_WEIGHT", 0.0),
     "deal_weight": ("REWARD_DEAL_WEIGHT", 0.0),
     "engagement_weight": ("REWARD_ENGAGEMENT_WEIGHT", 0.0),
+    "margin_weight": ("REWARD_MARGIN_WEIGHT", 0.0),
 }
 
 
@@ -805,6 +808,7 @@ class MyRewardFunction(RewardFunction):
         self.price_weight = weights["price_weight"]
         self.deal_weight = weights["deal_weight"]
         self.engagement_weight = weights["engagement_weight"]
+        self.margin_weight = weights["margin_weight"]
 
         self.log_reward_components = (
             os.environ.get("LOG_REWARD_COMPONENTS", "1") != "0"
@@ -868,10 +872,11 @@ class MyRewardFunction(RewardFunction):
             + reward_terms["overshoot_penalty"] 
             + reward_terms["disposal_penalty_term"] 
             + reward_terms["productivity_bonus"]
+            + context_terms["margin_bonus"]
             + context_terms["price_bonus"]
             + context_terms["deal_bonus"]
             + context_terms["engagement_bonus"]
-        )  
+        )
 
         if self.log_reward_components:
             self._log_reward_components(
@@ -985,28 +990,61 @@ class MyRewardFunction(RewardFunction):
         deals *actually realized this step* (from ``_diff_deals``). The trading
         *side* and the "good price" direction are auto-detected from the context:
 
+        - ``margin_weight``: profit-aligned reward for realized per-deal margin
+          (sell price minus cost basis, or value minus buy price), normalized by
+          price scale and capacity. This is the primary dense signal.
         - ``price_weight``: quantity-weighted reward for deals that beat the
           catalog price (above catalog when selling, below when buying).
         - ``deal_weight``: reward for realized volume, normalized by capacity.
         - ``engagement_weight``: reward for not ending/abandoning negotiations.
         """
-        terms = {"price_bonus": 0.0, "deal_bonus": 0.0, "engagement_bonus": 0.0}
+        terms = {
+            "margin_bonus": 0.0,
+            "price_bonus": 0.0,
+            "deal_bonus": 0.0,
+            "engagement_bonus": 0.0,
+        }
 
         try:
             is_consumer = "Consumer" in type(self.context).__name__
+            catalog_in, catalog_out = _catalog_prices(awi)
+            prod_cost = _safe_float(getattr(getattr(awi, "profile", None), "cost", 0.0))
+            n_lines = max(1.0, _safe_float(getattr(awi, "n_lines", 1.0), default=1.0))
 
             if is_consumer:
                 states = getattr(awi, "current_buy_states", {}) or {}
                 deals = buy_deals
-                reference, _ = _catalog_prices(awi)
+                reference = catalog_in
                 # Buying below catalog is favorable.
                 sign = -1.0
             else:
                 states = getattr(awi, "current_sell_states", {}) or {}
                 deals = sell_deals
-                _, reference = _catalog_prices(awi)
+                reference = catalog_out
                 # Selling above catalog is favorable.
                 sign = 1.0
+
+            # Profit-aligned margin: per realized unit, how far the deal price
+            # beats the break-even (cost basis for sells, output value for buys),
+            # as a fraction of the relevant price scale, weighted by volume.
+            if deals and self.margin_weight != 0.0:
+                if is_consumer:
+                    # value of one produced unit vs the price paid to acquire input
+                    break_even = catalog_out - prod_cost
+                    price_scale = max(catalog_in, 1e-6)
+                    unit_margins = [(break_even - price, qty) for price, qty in deals]
+                else:
+                    # sale price vs the cost basis of producing one output unit
+                    break_even = catalog_in + prod_cost
+                    price_scale = max(catalog_out, 1e-6)
+                    unit_margins = [(price - break_even, qty) for price, qty in deals]
+                margin_bonus = 0.0
+                for margin, qty in unit_margins:
+                    margin_bonus += (
+                        float(np.clip(margin / price_scale, -0.5, 0.5))
+                        * (qty / n_lines)
+                    )
+                terms["margin_bonus"] = self.margin_weight * margin_bonus
 
             if deals and self.price_weight != 0.0:
                 total_qty = sum(q for _, q in deals)
@@ -1042,7 +1080,12 @@ class MyRewardFunction(RewardFunction):
                     engaged / max(len(partners), 1)
                 )
         except Exception:
-            return {"price_bonus": 0.0, "deal_bonus": 0.0, "engagement_bonus": 0.0}
+            return {
+                "margin_bonus": 0.0,
+                "price_bonus": 0.0,
+                "deal_bonus": 0.0,
+                "engagement_bonus": 0.0,
+            }
 
         return terms
 
@@ -1098,6 +1141,8 @@ class MyRewardFunction(RewardFunction):
                 "productivity_weight",
                 "productivity_proxy",
                 "productivity_bonus",
+                "margin_weight",
+                "margin_bonus",
                 "price_weight",
                 "price_bonus",
                 "deal_weight",
@@ -1184,6 +1229,8 @@ class MyRewardFunction(RewardFunction):
                 "productivity_weight": self.productivity_weight,
                 "productivity_proxy": reward_terms["productivity_proxy"],
                 "productivity_bonus": reward_terms["productivity_bonus"],
+                "margin_weight": self.margin_weight,
+                "margin_bonus": context_terms["margin_bonus"],
                 "price_weight": self.price_weight,
                 "price_bonus": context_terms["price_bonus"],
                 "deal_weight": self.deal_weight,
