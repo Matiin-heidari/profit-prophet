@@ -784,7 +784,7 @@ class MyRewardFunction(RewardFunction):
         self.engagement_weight = weights["engagement_weight"]
 
         self.log_reward_components = (
-            os.environ.get("LOG_REWARD_COMPONENTS", "0") != "0"
+            os.environ.get("LOG_REWARD_COMPONENTS", "1") != "0"
         )
 
         self.reward_log_file = None
