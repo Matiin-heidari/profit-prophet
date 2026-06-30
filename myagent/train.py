@@ -3,6 +3,7 @@ import atexit
 import csv
 import logging
 import os
+import random
 from multiprocessing import Process, Queue
 from typing import Any
 
@@ -200,25 +201,47 @@ def _add_my_agent_stat_metrics(
         _add_series_metrics(metrics, f"my/{key}", values)
 
 
-def evaluate_model(model, context_name: str) -> dict[str, float]:
-    """Run one evaluation world and return loggable metrics."""
+def evaluate_model(
+    model, context_name: str, seed: int | None = None
+) -> dict[str, float]:
+    """Run one evaluation world and return loggable metrics.
+
+    If ``seed`` is given, the world generation and opponent randomness are made
+    reproducible by seeding the global RNG, so the same eval world is used at
+    every evaluation point during training- This gives a comparable learning curve
+    instead of one dominated by world-draw noise. The RNG state is saved and
+    restored around the seeded section so the training process's own randomness
+    stream is left untouched.
+    """
     context = make_context(context_name)
 
-    world, _ = context.generate(
-        types=(OneShotRLAgent,),
-        params=(
-            dict(
-                models=[model_wrapper(model, deterministic=True)],
-                observation_managers=[MyObservationManager(context, continuous=True)],
-                action_managers=[FlexibleActionManager(context)],
-            ),
-        ),
-    )
+    np_state = np.random.get_state() if seed is not None else None
+    py_state = random.getstate() if seed is not None else None
+    if seed is not None:
+        np.random.seed(seed)
+        random.seed(seed)
 
-    if hasattr(world, "run"):
-        world.run()
-    else:
-        world.run_with_progress()
+    try:
+        world, _ = context.generate(
+            types=(OneShotRLAgent,),
+            params=(
+                dict(
+                    models=[model_wrapper(model, deterministic=True)],
+                    observation_managers=[MyObservationManager(context, continuous=True)],
+                    action_managers=[FlexibleActionManager(context)],
+                ),
+            ),
+        )
+
+        if hasattr(world, "run"):
+            world.run()
+        else:
+            world.run_with_progress()
+    finally:
+        # Restore the RNG so training randomness is unaffected by eval seeding.
+        if seed is not None:
+            np.random.set_state(np_state)  # type: ignore[arg-type]
+            random.setstate(py_state)  # type: ignore[arg-type]
 
     metrics: dict[str, float] = {}
     scores: dict[str, float] = {}
@@ -480,8 +503,8 @@ class EvaluationCallback(BaseCallback):
 
         try:
             results = [
-                evaluate_model(self.model, self.context_name)
-                for _ in range(self.n_eval_episodes)
+                evaluate_model(self.model, self.context_name, seed=i)
+                for i in range(self.n_eval_episodes)
             ]
 
             metric_names = sorted({key for result in results for key in result})
