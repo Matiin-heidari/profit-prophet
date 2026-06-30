@@ -208,7 +208,7 @@ def evaluate_model(model, context_name: str) -> dict[str, float]:
         types=(OneShotRLAgent,),
         params=(
             dict(
-                models=[model_wrapper(model)],
+                models=[model_wrapper(model, deterministic=True)],
                 observation_managers=[MyObservationManager(context, continuous=True)],
                 action_managers=[FlexibleActionManager(context)],
             ),
