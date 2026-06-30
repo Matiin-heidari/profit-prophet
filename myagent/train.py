@@ -1228,14 +1228,15 @@ class MyRewardFunction(RewardFunction):
         counts["n_action_responses"] = float(len(action))
 
         for response in action.values():
-            response_type = str(getattr(response, "response", "")).lower()
+            resp = getattr(response, "response", None)
+
             outcome = getattr(response, "outcome", None)
 
-            if "accept" in response_type:
+            if resp == ResponseType.ACCEPT_OFFER:
                 counts["n_action_accept"] += 1.0
-            elif "reject" in response_type:
+            elif resp == ResponseType.REJECT_OFFER:
                 counts["n_action_reject"] += 1.0
-            elif "end" in response_type:
+            elif resp == ResponseType.END_NEGOTIATION:
                 counts["n_action_end"] += 1.0
 
             if outcome is not None:
