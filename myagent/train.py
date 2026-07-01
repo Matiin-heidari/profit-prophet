@@ -1478,6 +1478,12 @@ def train_one(context_name, ntrain, params, queue):
     n_eval_episodes = int(os.environ.get("N_EVAL_EPISODES", "3"))
     diagnostics_freq = int(os.environ.get("DIAGNOSTICS_FREQ", str(max(ntrain // 20, 1))))
 
+    # Training seed (network init, PPO action sampling, env seeding via SB3).
+    # Set SEED to make a run reproducible and to pair seeds across A/B arms
+    # (e.g. pure-profit SEED=0 vs PBRS SEED=0). Unset = nondeterministic (default).
+    seed_str = os.environ.get("SEED")
+    seed = int(seed_str) if seed_str not in (None, "") else None
+
     callbacks: list[BaseCallback] = [
         ProgressCallback(queue, context_name),
         TrainingDiagnosticsCallback(log_freq=diagnostics_freq),
@@ -1511,6 +1517,7 @@ def train_one(context_name, ntrain, params, queue):
             env,
             verbose=0,
             policy_kwargs=policy_kwargs,
+            seed=seed,
             tensorboard_log=f"./tensorboard_logs/{run_name}/{context_name}",
         ) # type: ignore learning_rate must be passed by the algorithm itself
 
@@ -1521,7 +1528,10 @@ def train_one(context_name, ntrain, params, queue):
             tb_log_name=context_name,
         )
 
-        model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
+        # Seeded runs save to a distinct filename so parallel A/B arms don't
+        # clobber each other or the canonical (deployed) models.
+        suffix = f"_seed{seed}" if seed is not None else ""
+        model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}{suffix}"
         model.save(model_path)
 
     finally:
@@ -1556,6 +1566,7 @@ def main(ntrain: int = NTRAINING):
     print(f"ntrain: {ntrain}")
     print(f"contexts: {CONTEXTS}")
     print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
+    print(f"seed: {os.environ.get('SEED', 'None (nondeterministic)')}")
     print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
     print(f"rl_agent_code: {_rl_agent_code()}")
     log_world = os.environ.get("LOG_WORLD", "0") != "0"
