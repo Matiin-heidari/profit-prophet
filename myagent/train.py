@@ -1528,10 +1528,15 @@ def train_one(context_name, ntrain, params, queue):
             tb_log_name=context_name,
         )
 
-        # Seeded runs save to a distinct filename so parallel A/B arms don't
-        # clobber each other or the canonical (deployed) models.
-        suffix = f"_seed{seed}" if seed is not None else ""
-        model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}{suffix}"
+        # Seeded runs save to a run-scoped filename so parallel A/B arms never
+        # collide with each other or with the canonical (deployed) models.
+        if seed is not None:
+            model_path = (
+                MODEL_PATH.parent
+                / f"{MODEL_PATH.name}{context_name}_{run_name}_seed{seed}"
+            )
+        else:
+            model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
         model.save(model_path)
 
     finally:
