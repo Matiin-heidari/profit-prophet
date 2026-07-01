@@ -750,6 +750,11 @@ _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     "WeakConsumerContext": {"margin_weight": 0.30, "need_weight": 0.10},
 }
 
+# Discount used for potential-based reward shaping (PBRS). Must match the RL
+# algorithm's discount (SB3 PPO default is 0.99) for the shaping to be exactly
+# policy-invariant.
+GAMMA = 0.99
+
 # Maps each reward-weight attribute to its environment variable and global
 # default. Single source of truth for both MyRewardFunction and the config dump.
 _REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
@@ -765,6 +770,9 @@ _REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
     "deal_weight": ("REWARD_DEAL_WEIGHT", 0.0),
     "engagement_weight": ("REWARD_ENGAGEMENT_WEIGHT", 0.0),
     "margin_weight": ("REWARD_MARGIN_WEIGHT", 0.0),
+    # Potential-based shaping: policy-invariant, densifies the sparse profit
+    # signal without changing the optimum. Off by default (opt-in per experiment).
+    "potential_weight": ("REWARD_POTENTIAL_WEIGHT", 0.0),
 }
 
 
@@ -809,6 +817,7 @@ class MyRewardFunction(RewardFunction):
         self.deal_weight = weights["deal_weight"]
         self.engagement_weight = weights["engagement_weight"]
         self.margin_weight = weights["margin_weight"]
+        self.potential_weight = weights["potential_weight"]
 
         self.log_reward_components = (
             os.environ.get("LOG_REWARD_COMPONENTS", "1") != "0"
@@ -826,17 +835,57 @@ class MyRewardFunction(RewardFunction):
 
         atexit.register(self._close_reward_log)
 
+    def _potential(self, awi: OneShotAWI) -> float:
+        """Potential Φ(s) for potential-based reward shaping (PBRS).
+
+        Φ = ``potential_weight`` × coverage, where coverage ∈ [0, 1] is the
+        fraction of the agent's *active need* already secured (1 = fully covered,
+        0 = nothing covered). Higher Φ = better positioned (less expected
+        shortfall/disposal). Used only as ``γ·Φ(s') − Φ(s)``, which — by Ng,
+        Harada & Russell (1999) — leaves the optimal policy unchanged while
+        densifying the sparse profit reward (Φ moves every step as needs are
+        covered). So this shaping can speed learning but provably cannot steer
+        the agent to a worse policy, unlike the ad-hoc need/margin terms.
+        """
+        if self.potential_weight == 0.0:
+            return 0.0
+        try:
+            needed_sales = _safe_float(getattr(awi, "needed_sales", 0.0))
+            needed_supplies = _safe_float(getattr(awi, "needed_supplies", 0.0))
+            name = type(self.context).__name__
+            if "Supplier" in name:
+                active_need = needed_sales
+            elif "Consumer" in name:
+                active_need = needed_supplies
+            else:
+                active_need = (
+                    needed_sales
+                    if abs(needed_sales) >= abs(needed_supplies)
+                    else needed_supplies
+                )
+            unmet = max(0.0, active_need)
+            scale = (
+                self.need_normalizer
+                if self.need_normalizer > 0.0
+                else max(1.0, _safe_float(getattr(awi, "n_lines", 1.0), default=1.0))
+            )
+            coverage = 1.0 - min(1.0, unmet / max(1.0, scale))
+            return self.potential_weight * coverage
+        except Exception:
+            return 0.0
+
     def before_action(self, awi: OneShotAWI) -> dict[str, Any]:
-        # Snapshot the score and the per-partner secured quantity/price so
-        # __call__ can diff and see deals that closed during this step.
-        # current_*_states only lists RUNNING negotiations (agreement never set),
-        # so realized trade must be read from sales/supplies counters instead.
+        # Snapshot the score, per-partner secured quantity/price, and the PBRS
+        # potential Φ(s) so __call__ can (a) diff sales/supplies to see deals that
+        # closed this step (current_*_states never expose the agreement), and
+        # (b) form the potential difference γ·Φ(s') − Φ(s).
         return {
             "score": float(getattr(awi, "current_score", 0.0)),
             "sales": dict(getattr(awi, "sales", {}) or {}),
             "sales_cost": dict(getattr(awi, "sales_cost", {}) or {}),
             "supplies": dict(getattr(awi, "supplies", {}) or {}),
             "supplies_cost": dict(getattr(awi, "supplies_cost", {}) or {}),
+            "potential": self._potential(awi),
         }
 
     def __call__(self, awi: OneShotAWI, action: dict[str, SAOResponse], info: Any):
@@ -865,17 +914,23 @@ class MyRewardFunction(RewardFunction):
             awi, action, sell_deals, buy_deals
         )
 
+        # Potential-based shaping: γ·Φ(s') − Φ(s). Policy-invariant.
+        prev_potential = _safe_float(before.get("potential", 0.0))
+        cur_potential = self._potential(awi)
+        pbrs_bonus = GAMMA * cur_potential - prev_potential
+
         final_reward = (
             score_delta_bonus
             + reward_terms["need_penalty"] # type: ignore
-            + reward_terms["shortfall_penalty_term"] 
-            + reward_terms["overshoot_penalty"] 
-            + reward_terms["disposal_penalty_term"] 
+            + reward_terms["shortfall_penalty_term"]
+            + reward_terms["overshoot_penalty"]
+            + reward_terms["disposal_penalty_term"]
             + reward_terms["productivity_bonus"]
             + context_terms["margin_bonus"]
             + context_terms["price_bonus"]
             + context_terms["deal_bonus"]
             + context_terms["engagement_bonus"]
+            + pbrs_bonus
         )
 
         if self.log_reward_components:
@@ -889,6 +944,7 @@ class MyRewardFunction(RewardFunction):
                 final_reward=final_reward,
                 reward_terms=reward_terms,
                 context_terms=context_terms,
+                pbrs_bonus=pbrs_bonus,
             )
 
         return final_reward
@@ -1143,6 +1199,8 @@ class MyRewardFunction(RewardFunction):
                 "productivity_bonus",
                 "margin_weight",
                 "margin_bonus",
+                "potential_weight",
+                "pbrs_bonus",
                 "price_weight",
                 "price_bonus",
                 "deal_weight",
@@ -1189,6 +1247,7 @@ class MyRewardFunction(RewardFunction):
         final_reward: float,
         reward_terms: dict[str, float | str],
         context_terms: dict[str, float],
+        pbrs_bonus: float = 0.0,
     ) -> None:
         """Write one reward component row."""
         if self.reward_log_writer is None:
@@ -1231,6 +1290,8 @@ class MyRewardFunction(RewardFunction):
                 "productivity_bonus": reward_terms["productivity_bonus"],
                 "margin_weight": self.margin_weight,
                 "margin_bonus": context_terms["margin_bonus"],
+                "potential_weight": self.potential_weight,
+                "pbrs_bonus": pbrs_bonus,
                 "price_weight": self.price_weight,
                 "price_bonus": context_terms["price_bonus"],
                 "deal_weight": self.deal_weight,
