@@ -118,6 +118,12 @@ class MyAgent(OneShotRLAgent):
             idx = getattr(self, "_valid_index", -1)
             chosen = ALL_CONTEXTS[idx] if 0 <= idx < len(ALL_CONTEXTS) else "fallback"
             awi = self.awi
+            n_suppliers = len(getattr(awi, "my_suppliers", []) or [])
+            n_consumers = len(getattr(awi, "my_consumers", []) or [])
+            n_competitors = getattr(awi, "n_competitors", "")
+            first = bool(getattr(awi, "is_first_level", False))
+            n_side = n_consumers if first else n_suppliers
+            d = n_side - n_competitors if isinstance(n_competitors, int) else ""
             run = os.environ.get("RUN_NAME", "default")
             log_dir = Path(LOG_ROOT) / "context_usage_logs" / run
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -127,15 +133,25 @@ class MyAgent(OneShotRLAgent):
                 writer = csv.writer(f)
                 if is_new:
                     writer.writerow(
-                        ["agent_id", "chosen", "level", "n_suppliers", "n_consumers"]
+                        [
+                            "agent_id",
+                            "chosen",
+                            "level",
+                            "n_suppliers",
+                            "n_consumers",
+                            "n_competitors",
+                            "d",
+                        ]
                     )
                 writer.writerow(
                     [
                         self.id,
                         chosen,
                         getattr(awi, "level", ""),
-                        len(getattr(awi, "my_suppliers", []) or []),
-                        len(getattr(awi, "my_consumers", []) or []),
+                        n_suppliers,
+                        n_consumers,
+                        n_competitors,
+                        d,
                     ]
                 )
         except Exception:
