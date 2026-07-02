@@ -7,6 +7,8 @@ This code is free to use or update given that proper attribution is given to
 the authors and the ANAC 2024 SCML competition.
 """
 
+import csv
+import os
 from pathlib import Path
 
 from scml.oneshot.rl.action import FlexibleActionManager
@@ -55,6 +57,44 @@ class MyAgent(OneShotRLAgent):
         )
 
         super().__init__(*args, **kwargs)
+
+    def init(self):
+        super().init()
+        self._log_context_usage()
+
+    def _log_context_usage(self) -> None:
+        """Record which per-context model (or heuristic fallback) was selected
+        for this world. One row per world. Robust and side-effect-safe: any
+        failure (e.g. read-only filesystem in a submission) is swallowed, and it
+        can be disabled entirely with LOG_CONTEXT_USAGE=0."""
+        if os.environ.get("LOG_CONTEXT_USAGE", "1") == "0":
+            return
+        try:
+            idx = getattr(self, "_valid_index", -1)
+            chosen = ALL_CONTEXTS[idx] if 0 <= idx < len(ALL_CONTEXTS) else "fallback"
+            awi = self.awi
+            run = os.environ.get("RUN_NAME", "default")
+            log_dir = Path("context_usage_logs") / run
+            log_dir.mkdir(parents=True, exist_ok=True)
+            path = log_dir / f"usage_{os.getpid()}.csv"
+            is_new = not path.exists()
+            with open(path, "a", newline="") as f:
+                writer = csv.writer(f)
+                if is_new:
+                    writer.writerow(
+                        ["agent_id", "chosen", "level", "n_suppliers", "n_consumers"]
+                    )
+                writer.writerow(
+                    [
+                        self.id,
+                        chosen,
+                        getattr(awi, "level", ""),
+                        len(getattr(awi, "my_suppliers", []) or []),
+                        len(getattr(awi, "my_consumers", []) or []),
+                    ]
+                )
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
