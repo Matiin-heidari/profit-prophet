@@ -17,6 +17,7 @@ from scml.oneshot.rl.common import model_wrapper
 
 from .common import (
     ALL_CONTEXTS,
+    LOG_ROOT,
     MODEL_PATH,
     MyObservationManager,
     TrainingAlgorithm,
@@ -74,7 +75,7 @@ class MyAgent(OneShotRLAgent):
             chosen = ALL_CONTEXTS[idx] if 0 <= idx < len(ALL_CONTEXTS) else "fallback"
             awi = self.awi
             run = os.environ.get("RUN_NAME", "default")
-            log_dir = Path("context_usage_logs") / run
+            log_dir = Path(LOG_ROOT) / "context_usage_logs" / run
             log_dir.mkdir(parents=True, exist_ok=True)
             path = log_dir / f"usage_{os.getpid()}.csv"
             is_new = not path.exists()

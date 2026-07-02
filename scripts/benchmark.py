@@ -28,6 +28,7 @@ from negmas.helpers import humanize_time
 from scml.utils import anac2024_oneshot, DefaultAgentsOneShot2024
 from scml_agents import get_agents
 
+from myagent.common import LOG_ROOT
 from myagent.myagent import MyAgent
 
 
@@ -39,14 +40,14 @@ def report_context_usage(run: str | None = None) -> None:
     """Aggregate MyAgent's context-usage logs and print which per-context model
     (or the Greedy fallback) it actually selected, as a share of all worlds.
 
-    MyAgent writes one row per world to context_usage_logs/<RUN_NAME>/usage_*.csv
+    MyAgent writes one row per world to log/context_usage_logs/<RUN_NAME>/usage_*.csv
     (see MyAgent._log_context_usage). This tells us not just how MyAgent scored
     but whether routing is healthy — e.g. an over-selection of one index-0
     context, or a high fallback rate, both of which mean the models aren't
     really being used as intended.
     """
     run = run or os.environ.get("RUN_NAME", "default")
-    log_dir = os.path.join("context_usage_logs", run)
+    log_dir = os.path.join(LOG_ROOT, "context_usage_logs", run)
     files = sorted(glob.glob(os.path.join(log_dir, "usage_*.csv")))
     if not files:
         print(f"\n(no context-usage logs found under {log_dir}/ — "

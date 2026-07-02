@@ -24,6 +24,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from .common import (
+    LOG_ROOT,
     MODEL_PATH,
     CONTEXTS,
     MyObservationManager,
@@ -1153,6 +1154,7 @@ class MyRewardFunction(RewardFunction):
         pid = os.getpid()
 
         log_dir = os.path.join(
+            LOG_ROOT,
             "reward_component_logs",
             run_name,
             context_name,
@@ -1518,7 +1520,7 @@ def train_one(context_name, ntrain, params, queue):
             verbose=0,
             policy_kwargs=policy_kwargs,
             seed=seed,
-            tensorboard_log=f"./tensorboard_logs/{run_name}/{context_name}",
+            tensorboard_log=f"./{LOG_ROOT}/tensorboard_logs/{run_name}/{context_name}",
         ) # type: ignore learning_rate must be passed by the algorithm itself
 
         model.learn(

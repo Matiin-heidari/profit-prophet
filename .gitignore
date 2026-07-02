@@ -2,10 +2,8 @@
 myagent/models/*.zip
 old_models
 
-# Tensorboard, context and reward logs
-tensorboard_logs
-reward_component_logs
-context_usage_logs
+# Tensorboard, context and reward logs (all under log/)
+log
 
 awi_dump.json
 figures

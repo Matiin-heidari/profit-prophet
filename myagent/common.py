@@ -25,6 +25,10 @@ TrainingAlgorithm: type[BaseAlgorithm] = PPO
 MODEL_PATH = Path(__file__).parent / "models" / "mymodel"
 """The path in which train.py saves the trained model and from which myagent.py loads it."""
 
+LOG_ROOT = "log"
+"""Parent directory (relative to the run's CWD) for all log subfolders:
+tensorboard_logs/, reward_component_logs/, context_usage_logs/."""
+
 ALL_CONTEXTS = [
     "StrongSupplierContext",
     "BalancedSupplierContext",

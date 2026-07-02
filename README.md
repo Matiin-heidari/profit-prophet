@@ -31,7 +31,7 @@ TRAIN_CONTEXTS=WeakSupplierContext RUN_NAME=experiment1 LOG_REWARD_COMPONENTS=1 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `TRAIN_CONTEXTS` | all 6 contexts | Comma-separated contexts to train. Valid names: `StrongSupplierContext`, `BalancedSupplierContext`, `WeakSupplierContext`, `StrongConsumerContext`, `BalancedConsumerContext`, `WeakConsumerContext`. |
-| `RUN_NAME` | `default` | Label for output folders (`tensorboard_logs/<RUN_NAME>/`, `reward_component_logs/<RUN_NAME>/`). Use a unique name per run so logs don't overwrite each other. |
+| `RUN_NAME` | `default` | Label for output folders (`log/tensorboard_logs/<RUN_NAME>/`, `log/reward_component_logs/<RUN_NAME>/`). Use a unique name per run so logs don't overwrite each other. |
 | `EVAL_FREQ` | `steps / 5` | Timesteps between evaluations. |
 | `N_EVAL_EPISODES` | `3` | Number of evaluation worlds run per evaluation. |
 | `DIAGNOSTICS_FREQ` | `steps / 20` | Timesteps between training-diagnostics logging (observation/action/reward summaries). |
@@ -84,7 +84,7 @@ and `time_pressure_weight = 1.0`; the remaining weights default to `0.0`.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `LOG_REWARD_COMPONENTS` | `0` | `1` writes a per-step CSV of every reward component to `reward_component_logs/<RUN_NAME>/<context>/<job_id>/`. Useful for debugging the reward; adds I/O overhead, so keep off for production runs. |
+| `LOG_REWARD_COMPONENTS` | `0` | `1` writes a per-step CSV of every reward component to `log/reward_component_logs/<RUN_NAME>/<context>/<job_id>/`. Useful for debugging the reward; adds I/O overhead, so keep off for production runs. |
 | `REWARD_LOG_FLUSH_EVERY` | `1000` | Flush the reward-component CSV every N rows (only relevant when `LOG_REWARD_COMPONENTS=1`). |
 | `LOG_WORLD` | `0` | `1` enables a verbose, fail-fast world (debug mode, saves contracts/negotiations, exceptions propagate). Default `0` is the robust profile (agent/negotiation exceptions ignored, minimal logging) — use that for long unattended runs. |
 
@@ -99,12 +99,12 @@ These are read if present but normally set by the scheduler, not by hand:
 
 ## Viewing Training Logs
 
-Training metrics are logged to `./tensorboard_logs/<RUN_NAME>/<context_name>/` via TensorBoard.
+Training metrics are logged to `./log/tensorboard_logs/<RUN_NAME>/<context_name>/` via TensorBoard.
 
 To view them, run:
 
 ```bash
-tensorboard --logdir ./tensorboard_logs
+tensorboard --logdir ./log/tensorboard_logs
 ```
 
 Then open [http://localhost:6006](http://localhost:6006) in your browser.
