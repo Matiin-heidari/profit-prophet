@@ -45,7 +45,7 @@ class MyAgent(OneShotRLAgent):
             action_managers.append(FlexibleActionManager(context))
 
         models = tuple(
-            model_wrapper(TrainingAlgorithm.load(path))
+            model_wrapper(TrainingAlgorithm.load(path, device="cpu"))
             for path in self.paths
         )
 
