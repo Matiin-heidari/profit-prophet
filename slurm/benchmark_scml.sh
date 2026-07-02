@@ -12,7 +12,7 @@
 # MyAgent's rank / gap-to-best and the per-agent spread (noise floor).
 # No training here — it benchmarks whatever models are currently on disk.
 # Override knobs at submit time, e.g.:
-#   N_CONFIGS=20 N_STEPS=50 sbatch benchmark_scml.sh
+#   N_CONFIGS=20 N_STEPS=50 sbatch slurm/benchmark_scml.sh
 
 set -euo pipefail
 module load miniforge3/24.3.0-0
