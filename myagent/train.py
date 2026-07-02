@@ -771,8 +771,7 @@ _REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
     "deal_weight": ("REWARD_DEAL_WEIGHT", 0.0),
     "engagement_weight": ("REWARD_ENGAGEMENT_WEIGHT", 0.0),
     "margin_weight": ("REWARD_MARGIN_WEIGHT", 0.0),
-    # Potential-based shaping: policy-invariant, densifies the sparse profit
-    # signal without changing the optimum. Off by default (opt-in per experiment).
+    # Potential-based shaping: policy-invariant, densifies the sparse profit signal without changing the optimum
     "potential_weight": ("REWARD_POTENTIAL_WEIGHT", 0.0),
 }
 
@@ -877,9 +876,7 @@ class MyRewardFunction(RewardFunction):
 
     def before_action(self, awi: OneShotAWI) -> dict[str, Any]:
         # Snapshot the score, per-partner secured quantity/price, and the PBRS
-        # potential Φ(s) so __call__ can (a) diff sales/supplies to see deals that
-        # closed this step (current_*_states never expose the agreement), and
-        # (b) form the potential difference γ·Φ(s') − Φ(s).
+        # potential Φ(s)
         return {
             "score": float(getattr(awi, "current_score", 0.0)),
             "sales": dict(getattr(awi, "sales", {}) or {}),
@@ -1081,9 +1078,7 @@ class MyRewardFunction(RewardFunction):
                 # Selling above catalog is favorable.
                 sign = 1.0
 
-            # Profit-aligned margin: per realized unit, how far the deal price
-            # beats the break-even (cost basis for sells, output value for buys),
-            # as a fraction of the relevant price scale, weighted by volume.
+
             if deals and self.margin_weight != 0.0:
                 if is_consumer:
                     # value of one produced unit vs the price paid to acquire input
