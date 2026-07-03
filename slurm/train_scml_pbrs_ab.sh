@@ -18,7 +18,7 @@
 set -euo pipefail
 module load miniforge3/24.3.0-0
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "$PROJECT_DIR/envs/agentic"
+conda activate "$PROJECT_DIR/profit-prophet-env/agentic"
 cd "$SLURM_SUBMIT_DIR"
 
 ARMS=(pureprofit pureprofit pureprofit pbrs pbrs pbrs)
