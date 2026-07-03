@@ -1,9 +1,13 @@
-"""Benchmark MyAgent against last year's (2024) ANAC OneShot qualifiers.
+"""Benchmark MyAgent against the newest available ANAC OneShot qualifiers.
 
 This is the measurement step: it drops MyAgent into a real ANAC-style tournament
 against the qualifier pool (a meaningful opponent set with a real ceiling, unlike
 the weak default agents) and reports where MyAgent lands. Run it over enough
 configs that the ranking is not dominated by world-draw noise.
+
+By default it uses the newest agent pool shipped by scml-agents (2025 as of
+scml-agents 0.5.0 — note the *world* is still anac2024_oneshot; only the agent
+pool is newer). Pass --year to pin a specific pool.
 
 MyAgent loads its per-context models from MODEL_PATH on construction (see
 myagent/myagent.py), so the benchmark just needs to pass the class in as a
@@ -15,6 +19,7 @@ Usage:
 """
 
 import argparse
+import datetime
 import glob
 import os
 import sys
@@ -22,6 +27,8 @@ import time
 
 # Allow running as `python scripts/benchmark.py` from the repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 import pandas as pd
 from negmas.helpers import humanize_time
@@ -34,6 +41,60 @@ from myagent.myagent import MyAgent
 
 def _short(name: str) -> str:
     return str(name).split(".")[-1]
+
+
+def newest_agent_year() -> int:
+    """Return the newest year for which scml-agents ships a OneShot pool.
+
+    scml-agents raises ValueError instantly for unknown years (no import cost),
+    so we can just probe downward from a year safely past the present. This keeps
+    the benchmark on the latest pool automatically across future scml-agents
+    upgrades instead of hard-coding a year.
+    """
+    for year in range(datetime.date.today().year + 1, 2018, -1):
+        try:
+            if get_agents(year, track="oneshot", as_class=True, ignore_failing=True):
+                return year
+        except ValueError:
+            continue
+    return 2024  # fallback: the last pool we know exists
+
+
+def load_qualifiers(year: int) -> tuple[list, bool]:
+    """Load the OneShot competitor pool for ``year``, preferring qualified-only.
+
+    Some pools ship broken qualification metadata (e.g. 2025 in scml-agents
+    0.5.0, whose qualified_only path raises AttributeError on a malformed agent
+    module). In that case we fall back to the full pool so the benchmark still
+    runs against the newest agents. Returns (agents, used_qualified_filter).
+    """
+    try:
+        agents = list(
+            get_agents(
+                year,
+                track="oneshot",
+                qualified_only=True,
+                as_class=True,
+                ignore_failing=True,  # skip qualifiers that no longer import
+            )
+        )
+        if agents:
+            return agents, True
+    except Exception as e:
+        print(
+            f"(qualified-only pool for {year} unavailable "
+            f"[{type(e).__name__}: {e}] — falling back to the full pool)"
+        )
+    agents = list(
+        get_agents(
+            year,
+            track="oneshot",
+            qualified_only=False,
+            as_class=True,
+            ignore_failing=True,
+        )
+    )
+    return agents, False
 
 
 def report_context_usage(run: str | None = None) -> None:
@@ -80,22 +141,17 @@ def report_context_usage(run: str | None = None) -> None:
 
 
 def benchmark(
-    year: int = 2024,
+    year: int | None = None,
     n_configs: int = 10,
     n_steps: int = 50,
     include_defaults: bool = False,
     serial: bool = False,
 ) -> None:
-    qualifiers = list(
-        get_agents(
-            year,
-            track="oneshot",
-            qualified_only=True,
-            as_class=True,
-            ignore_failing=True,  # skip qualifiers that no longer import
-        )
-    )
-    print(f"Loaded {len(qualifiers)} qualifier agents for {year}.")
+    if year is None:
+        year = newest_agent_year()
+    qualifiers, used_qualified = load_qualifiers(year)
+    pool_kind = "qualifier" if used_qualified else "full-pool"
+    print(f"Loaded {len(qualifiers)} {pool_kind} agents for {year}.")
 
     competitors = [MyAgent] + qualifiers
     if include_defaults:
@@ -167,7 +223,8 @@ def benchmark(
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--year", type=int, default=2024)
+    p.add_argument("--year", type=int, default=None,
+                   help="agent-pool year (default: newest available)")
     p.add_argument("--n-configs", type=int, default=10)
     p.add_argument("--n-steps", type=int, default=50)
     p.add_argument("--include-defaults", action="store_true",

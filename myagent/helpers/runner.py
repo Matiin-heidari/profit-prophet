@@ -1,5 +1,11 @@
+import os
 from pathlib import Path
 import time
+
+# Hide the GPU before torch is imported. This runner forks parallel workers, and
+# any torch-using agent that touches CUDA in a forked child raises "Cannot
+# re-initialize CUDA in forked subprocess"
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 from negmas.helpers import humanize_time
 from rich import print
