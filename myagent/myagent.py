@@ -64,25 +64,7 @@ class MyAgent(OneShotRLAgent):
         self._log_context_usage()
 
     def context_switch(self) -> None:
-        """Select the per-context model from THIS agent's actual position.
-
-        We override the base `OneShotRLAgent.context_switch`, which routes via
-        `context.is_valid_awi(awi, types=(type(self),))`. That path is broken for
-        deployment: worlds store agents wrapped in `DefaultOneShotAdapter`, so the
-        `find_test_agents` type-match (`isinobject(adapter, MyAgent)`) never hits,
-        the per-agent validity loop is skipped, and EVERY context validates
-        vacuously — so the base always picks index 0 (StrongSupplier) for every
-        world, including consumer positions. See CLAUDE.md.
-
-        Instead we route directly off `self.awi`:
-          * side  = supplier (first level) vs consumer (last level), from `level`;
-          * strength = Strong/Balanced/Weak from the trading-side partner count
-            relative to same-level competitors (`d = n_side - n_competitors`),
-            with thresholds derived empirically from generated worlds
-            (d<=-1 Strong, d in {0,1} Balanced, d>=2 Weak). Side is exact;
-            strength has irreducible overlap between the contexts near the
-            boundaries, so it is best-effort but always lands on the right side.
-        """
+        """Select the per-context model from this agent's position."""
         self._valid_index = self._select_index()
         if self.has_no_valid_model() and self._fallback_agent is None:
             self.setup_fallback()
