@@ -1,24 +1,25 @@
-"""Benchmark MyAgent against the newest ANAC OneShot agent pool.
+"""Benchmark MyAgent against the newest available ANAC OneShot qualifiers.
 
 This is the measurement step: it drops MyAgent into a real ANAC-style tournament
-against a meaningful opponent pool (a real ceiling, unlike the weak default
-agents) and reports where MyAgent lands. Run it over enough configs that the
-ranking is not dominated by world-draw noise.
+against the qualifier pool (a meaningful opponent set with a real ceiling, unlike
+the weak default agents) and reports where MyAgent lands. Run it over enough
+configs that the ranking is not dominated by world-draw noise.
 
-By default it uses the newest available agent pool (2025, 16 agents, via
-scml-agents 0.5.0), falling back to the full pool when qualification metadata is
-broken (it is for 2025). The world is still anac2024_oneshot regardless of pool.
+By default it uses the newest agent pool shipped by scml-agents (2025 as of
+scml-agents 0.5.0 — note the *world* is still anac2024_oneshot; only the agent
+pool is newer). Pass --year to pin a specific pool.
 
 MyAgent loads its per-context models from MODEL_PATH on construction (see
 myagent/myagent.py), so the benchmark just needs to pass the class in as a
 competitor — the tournament framework instantiates it.
 
 Usage:
-    .venv/bin/python scripts/benchmark.py --n-configs 25 --n-steps 50
+    .venv/bin/python scripts/benchmark.py --n-configs 10 --n-steps 50
     .venv/bin/python scripts/benchmark.py --year 2024 --include-defaults
 """
 
 import argparse
+import datetime
 import glob
 import os
 import sys
@@ -26,6 +27,8 @@ import time
 
 # Allow running as `python scripts/benchmark.py` from the repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 import pandas as pd
 from negmas.helpers import humanize_time
@@ -40,42 +43,58 @@ def _short(name: str) -> str:
     return str(name).split(".")[-1]
 
 
-def newest_agent_year(candidates=(2025, 2024, 2023)) -> int:
-    """Return the newest year that actually exposes a OneShot agent pool.
+def newest_agent_year() -> int:
+    """Return the newest year for which scml-agents ships a OneShot pool.
 
-    scml-agents ships new agent pools without a matching world (the world stays
-    anac2024_oneshot), so we probe the full pool per year and take the newest
-    non-empty one.
+    scml-agents raises ValueError instantly for unknown years (no import cost),
+    so we can just probe downward from a year safely past the present. This keeps
+    the benchmark on the latest pool automatically across future scml-agents
+    upgrades instead of hard-coding a year.
     """
-    for year in candidates:
+    for year in range(datetime.date.today().year + 1, 2018, -1):
         try:
-            if list(get_agents(year, track="oneshot", qualified_only=False,
-                               as_class=True, ignore_failing=True)):
+            if get_agents(year, track="oneshot", as_class=True, ignore_failing=True):
                 return year
-        except Exception:
+        except ValueError:
             continue
-    return 2024
+    return 2024  # fallback: the last pool we know exists
 
 
-def load_qualifiers(year: int):
-    """Load a year's opponent pool, preferring the qualifiers.
+def load_qualifiers(year: int) -> tuple[list, bool]:
+    """Load the OneShot competitor pool for ``year``, preferring qualified-only.
 
-    Falls back to the FULL pool when qualification metadata is broken — which it
-    is for 2025 in scml-agents 0.5.0 (`qualified_only=True` raises AttributeError
-    on `scml2025...mat.mat`). Returns (agents, pool_label).
+    Some pools ship broken qualification metadata (e.g. 2025 in scml-agents
+    0.5.0, whose qualified_only path raises AttributeError on a malformed agent
+    module). In that case we fall back to the full pool so the benchmark still
+    runs against the newest agents. Returns (agents, used_qualified_filter).
     """
     try:
-        agents = list(get_agents(year, track="oneshot", qualified_only=True,
-                                  as_class=True, ignore_failing=True))
+        agents = list(
+            get_agents(
+                year,
+                track="oneshot",
+                qualified_only=True,
+                as_class=True,
+                ignore_failing=True,  # skip qualifiers that no longer import
+            )
+        )
         if agents:
-            return agents, "qualified"
-        reason = "no qualifiers returned"
+            return agents, True
     except Exception as e:
-        reason = f"{type(e).__name__}"
-    print(f"(qualified pool unavailable for {year}: {reason}; using full pool)")
-    agents = list(get_agents(year, track="oneshot", qualified_only=False,
-                             as_class=True, ignore_failing=True))
-    return agents, "full"
+        print(
+            f"(qualified-only pool for {year} unavailable "
+            f"[{type(e).__name__}: {e}] — falling back to the full pool)"
+        )
+    agents = list(
+        get_agents(
+            year,
+            track="oneshot",
+            qualified_only=False,
+            as_class=True,
+            ignore_failing=True,
+        )
+    )
+    return agents, False
 
 
 def report_context_usage(run: str | None = None) -> None:
@@ -130,10 +149,9 @@ def benchmark(
 ) -> None:
     if year is None:
         year = newest_agent_year()
-        print(f"No --year given; using newest available agent pool: {year}")
-    qualifiers, pool = load_qualifiers(year)
-    print(f"Loaded {len(qualifiers)} {pool}-pool agents for {year} "
-          f"(world is still anac2024_oneshot).")
+    qualifiers, used_qualified = load_qualifiers(year)
+    pool_kind = "qualifier" if used_qualified else "full-pool"
+    print(f"Loaded {len(qualifiers)} {pool_kind} agents for {year}.")
 
     competitors = [MyAgent] + qualifiers
     if include_defaults:
@@ -206,8 +224,7 @@ def benchmark(
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--year", type=int, default=None,
-                   help="agent-pool year; default = newest available "
-                        "(2025 pool as of scml-agents 0.5.0)")
+                   help="agent-pool year (default: newest available)")
     p.add_argument("--n-configs", type=int, default=10)
     p.add_argument("--n-steps", type=int, default=50)
     p.add_argument("--include-defaults", action="store_true",
