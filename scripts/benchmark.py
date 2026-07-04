@@ -1,16 +1,20 @@
-"""Benchmark MyAgent against last year's (2024) ANAC OneShot qualifiers.
+"""Benchmark MyAgent against the newest ANAC OneShot agent pool.
 
 This is the measurement step: it drops MyAgent into a real ANAC-style tournament
-against the qualifier pool (a meaningful opponent set with a real ceiling, unlike
-the weak default agents) and reports where MyAgent lands. Run it over enough
-configs that the ranking is not dominated by world-draw noise.
+against a meaningful opponent pool (a real ceiling, unlike the weak default
+agents) and reports where MyAgent lands. Run it over enough configs that the
+ranking is not dominated by world-draw noise.
+
+By default it uses the newest available agent pool (2025, 16 agents, via
+scml-agents 0.5.0), falling back to the full pool when qualification metadata is
+broken (it is for 2025). The world is still anac2024_oneshot regardless of pool.
 
 MyAgent loads its per-context models from MODEL_PATH on construction (see
 myagent/myagent.py), so the benchmark just needs to pass the class in as a
 competitor — the tournament framework instantiates it.
 
 Usage:
-    .venv/bin/python scripts/benchmark.py --n-configs 10 --n-steps 50
+    .venv/bin/python scripts/benchmark.py --n-configs 25 --n-steps 50
     .venv/bin/python scripts/benchmark.py --year 2024 --include-defaults
 """
 
@@ -34,6 +38,44 @@ from myagent.myagent import MyAgent
 
 def _short(name: str) -> str:
     return str(name).split(".")[-1]
+
+
+def newest_agent_year(candidates=(2025, 2024, 2023)) -> int:
+    """Return the newest year that actually exposes a OneShot agent pool.
+
+    scml-agents ships new agent pools without a matching world (the world stays
+    anac2024_oneshot), so we probe the full pool per year and take the newest
+    non-empty one.
+    """
+    for year in candidates:
+        try:
+            if list(get_agents(year, track="oneshot", qualified_only=False,
+                               as_class=True, ignore_failing=True)):
+                return year
+        except Exception:
+            continue
+    return 2024
+
+
+def load_qualifiers(year: int):
+    """Load a year's opponent pool, preferring the qualifiers.
+
+    Falls back to the FULL pool when qualification metadata is broken — which it
+    is for 2025 in scml-agents 0.5.0 (`qualified_only=True` raises AttributeError
+    on `scml2025...mat.mat`). Returns (agents, pool_label).
+    """
+    try:
+        agents = list(get_agents(year, track="oneshot", qualified_only=True,
+                                  as_class=True, ignore_failing=True))
+        if agents:
+            return agents, "qualified"
+        reason = "no qualifiers returned"
+    except Exception as e:
+        reason = f"{type(e).__name__}"
+    print(f"(qualified pool unavailable for {year}: {reason}; using full pool)")
+    agents = list(get_agents(year, track="oneshot", qualified_only=False,
+                             as_class=True, ignore_failing=True))
+    return agents, "full"
 
 
 def report_context_usage(run: str | None = None) -> None:
@@ -80,22 +122,18 @@ def report_context_usage(run: str | None = None) -> None:
 
 
 def benchmark(
-    year: int = 2024,
+    year: int | None = None,
     n_configs: int = 10,
     n_steps: int = 50,
     include_defaults: bool = False,
     serial: bool = False,
 ) -> None:
-    qualifiers = list(
-        get_agents(
-            year,
-            track="oneshot",
-            qualified_only=True,
-            as_class=True,
-            ignore_failing=True,  # skip qualifiers that no longer import
-        )
-    )
-    print(f"Loaded {len(qualifiers)} qualifier agents for {year}.")
+    if year is None:
+        year = newest_agent_year()
+        print(f"No --year given; using newest available agent pool: {year}")
+    qualifiers, pool = load_qualifiers(year)
+    print(f"Loaded {len(qualifiers)} {pool}-pool agents for {year} "
+          f"(world is still anac2024_oneshot).")
 
     competitors = [MyAgent] + qualifiers
     if include_defaults:
@@ -167,7 +205,9 @@ def benchmark(
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--year", type=int, default=2024)
+    p.add_argument("--year", type=int, default=None,
+                   help="agent-pool year; default = newest available "
+                        "(2025 pool as of scml-agents 0.5.0)")
     p.add_argument("--n-configs", type=int, default=10)
     p.add_argument("--n-steps", type=int, default=50)
     p.add_argument("--include-defaults", action="store_true",

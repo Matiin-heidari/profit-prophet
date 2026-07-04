@@ -20,9 +20,9 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$PROJECT_DIR/envs/agentic"
 cd "$SLURM_SUBMIT_DIR"
 
-YEAR="${YEAR:-2024}"
-N_CONFIGS="${N_CONFIGS:-10}"
-N_STEPS="${N_STEPS:-50}"
+YEAR="${YEAR:-2025}"          # newest agent pool (16 agents); world stays 2024
+N_CONFIGS="${N_CONFIGS:-25}"  # enough configs for a stable ranking vs ~16 agents
+N_STEPS="${N_STEPS:-50}"      # keep in (20,200) so contexts stay representative
 
 # Group this benchmark's per-world context-usage logs under one run dir so
 # benchmark.py can report the routing / fallback breakdown at the end.
