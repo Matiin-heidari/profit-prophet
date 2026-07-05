@@ -9,7 +9,7 @@ slurm_logs
 awi_dump.json
 figures
 CLAUDE.md
-
+selected_models
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
