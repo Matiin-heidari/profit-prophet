@@ -17,11 +17,12 @@
 set -euo pipefail
 module load miniforge3/24.3.0-0
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "$PROJECT_DIR/profit-prophet-env/agentic"
+conda activate "$PROJECT_DIR/envs/agentic"
 cd "$SLURM_SUBMIT_DIR"
 
-YEAR="${YEAR:-2025}"          # newest agent pool (16 agents); world stays 2024
-N_CONFIGS="${N_CONFIGS:-25}"  # enough configs for a stable ranking vs ~16 agents
+YEAR="${YEAR:-2024}"          # old env (scml-agents 0.4.9): 2024 = 10 qualifiers
+                              # (no 2025 pool here; that needs the new env)
+N_CONFIGS="${N_CONFIGS:-25}"  # enough configs for a stable ranking
 N_STEPS="${N_STEPS:-50}"      # keep in (20,200) so contexts stay representative
 
 # Group this benchmark's per-world context-usage logs under one run dir so

@@ -1,0 +1,28 @@
+
+# --- SCML / negotiation stack (tracks latest) ---
+scml>=0.8.3
+negmas>=0.15.7
+scml-agents>=0.5.0
+anl>=0.1.10
+
+# --- RL training stack (pinned: gates env API + saved-model compatibility) ---
+# SB3 2.3 targets Gymnasium 0.29; do NOT let these float to SB3 2.9 / Gym 1.x
+# (breaking API) or Torch >2.2 (ABI-incompatible with NumPy 1.x).
+stable_baselines3==2.3.0
+sb3_contrib==2.3.0
+gymnasium==0.29.1
+torch==2.2.2
+numpy==1.26.4
+
+# --- data / logging / CLI ---
+pandas>=2.2
+tensorboard>=2.20.0   
+setuptools>=68        
+tqdm>=4.66
+rich>=13.7
+typer>=0.12
+
+# --- results / plotting (myagent/helpers/runner.py) ---
+matplotlib>=3.8
+seaborn>=0.13
+tabulate>=0.9
