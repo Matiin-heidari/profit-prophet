@@ -36,6 +36,7 @@ TRAIN_CONTEXTS=WeakSupplierContext RUN_NAME=experiment1 LOG_REWARD_COMPONENTS=1 
 | `N_EVAL_EPISODES` | `3` | Number of evaluation worlds run per evaluation. |
 | `DIAGNOSTICS_FREQ` | `steps / 20` | Timesteps between training-diagnostics logging (observation/action/reward summaries). |
 | `RL_AGENT_CODE` | `On` | Short code used to identify our RL agent in `world.scores()` during evaluation. |
+| `ACTION_MANAGER` | `flexible` | Action space for training/eval. `flexible` = scml's `FlexibleActionManager` (ACCEPT only via exactly echoing the partner's offer — the space of all models trained before 2026-07-06). `accept` = `AcceptFlagActionManager` (`myagent/action.py`): one extra quantity value per partner acts as an explicit "close" flag — ACCEPT the partner's current offer, or END if there is none. Models trained with different managers are **not** interchangeable; deployment (`MyAgent`) auto-detects the right manager per model from its saved action space. |
 
 ### Reward shaping weights
 

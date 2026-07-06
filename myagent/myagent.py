@@ -18,6 +18,7 @@ from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
 
+from .action import AcceptFlagActionManager
 from .common import (
     ALL_CONTEXTS,
     LOG_ROOT,
@@ -26,6 +27,28 @@ from .common import (
     TrainingAlgorithm,
     make_context,
 )
+
+
+def _matching_action_manager(context, model):
+    """Pick the action manager whose space matches the model's saved one.
+
+    Models trained before the AcceptFlag manager existed use the plain
+    FlexibleActionManager space ([max_q+1, n_prices] per partner); AcceptFlag
+    models have one extra quantity value ([max_q+2, ...]). Matching on the
+    saved `model.action_space` makes deployment self-configuring, so mixed
+    sets of old- and new-space models load correctly with no flags to keep
+    in sync.
+    """
+    empty = np.zeros(0, dtype=np.int64)
+    model_nvec = np.asarray(getattr(model.action_space, "nvec", empty))
+    candidates = (AcceptFlagActionManager(context), FlexibleActionManager(context))
+    for manager in candidates:
+        space = manager.make_space()
+        if np.array_equal(np.asarray(getattr(space, "nvec", empty)), model_nvec):
+            return manager
+    # No exact match (e.g. a model saved with different context params):
+    # keep the historical default rather than failing the whole agent.
+    return candidates[-1]
 
 
 class MyAgent(OneShotRLAgent):
@@ -37,20 +60,20 @@ class MyAgent(OneShotRLAgent):
 
         observation_managers = []
         action_managers = []
+        models = []
 
         # The runtime agent should always load all supported contexts.
         for context_name in ALL_CONTEXTS:
             model_path = MODEL_PATH.parent / f"{base_name}{context_name}"
             self.paths.append(model_path)
 
+            model = TrainingAlgorithm.load(model_path, device="cpu")
             context = make_context(context_name)
             observation_managers.append(MyObservationManager(context, continuous=True))
-            action_managers.append(FlexibleActionManager(context))
+            action_managers.append(_matching_action_manager(context, model))
+            models.append(model_wrapper(model, deterministic=True))
 
-        models = tuple(
-            model_wrapper(TrainingAlgorithm.load(path, device="cpu"), deterministic=True)
-            for path in self.paths
-        )
+        models = tuple(models)
 
         kwargs.update(
             dict(

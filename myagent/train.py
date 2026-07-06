@@ -23,6 +23,7 @@ from tqdm import tqdm
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
+from .action import make_action_manager
 from .common import (
     LOG_ROOT,
     MODEL_PATH,
@@ -229,7 +230,7 @@ def evaluate_model(
                 dict(
                     models=[model_wrapper(model, deterministic=True)],
                     observation_managers=[MyObservationManager(context, continuous=True)],
-                    action_managers=[FlexibleActionManager(context)],
+                    action_managers=[make_action_manager(context)],
                 ),
             ),
         )
@@ -1402,7 +1403,7 @@ def make_env(context_name, log: bool | None = None) -> OneShotEnv:
     context.world_params.update(world_params)
 
     return OneShotEnv(
-        action_manager=FlexibleActionManager(context=context),
+        action_manager=make_action_manager(context),
         observation_manager=MyObservationManager(context=context, continuous=True),  # type: ignore
         reward_function=MyRewardFunction(context=context),
         context=context,
@@ -1423,7 +1424,7 @@ def try_a_model(
             dict(
                 models=[model_wrapper(model, deterministic=True)],
                 observation_managers=[MyObservationManager(context, continuous=True)],
-                action_managers=[FlexibleActionManager(context)],
+                action_managers=[make_action_manager(context)],
             ),
         ),
     )
@@ -1442,7 +1443,7 @@ def try_a_trained_model(context_name: str):
             dict(
                 models=[model_wrapper(model, deterministic=True)],
                 observation_managers=[MyObservationManager(context, continuous=True)],
-                action_managers=[FlexibleActionManager(context)],
+                action_managers=[make_action_manager(context)],
             ),
         ),
     )
@@ -1577,6 +1578,10 @@ def main(ntrain: int = NTRAINING):
     print(f"seed: {os.environ.get('SEED', 'None (nondeterministic)')}")
     print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
     print(f"rl_agent_code: {_rl_agent_code()}")
+    print(
+        f"action_manager: {type(make_action_manager(make_context(CONTEXTS[0]))).__name__} "
+        f"(ACTION_MANAGER={os.environ.get('ACTION_MANAGER', 'flexible')})"
+    )
     log_world = os.environ.get("LOG_WORLD", "0") != "0"
     print(f"log_world: {log_world} ({'debug/fail-fast' if log_world else 'robust'})")
 
