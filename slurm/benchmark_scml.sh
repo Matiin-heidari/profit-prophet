@@ -2,7 +2,7 @@
 #SBATCH --job-name=scml_benchmark
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=96G
 #SBATCH --partition=kisski
@@ -22,8 +22,14 @@ cd "$SLURM_SUBMIT_DIR"
 
 YEAR="${YEAR:-2024}"          # old env (scml-agents 0.4.9): 2024 = 10 qualifiers
                               # (no 2025 pool here; that needs the new env)
-N_CONFIGS="${N_CONFIGS:-25}"  # enough configs for a stable ranking
+N_CONFIGS="${N_CONFIGS:-2}"   # each config runs ~500 worlds (~8s each). SERIAL fits
+                              # ~2 configs in <3h. Raise only if you raise --time.
 N_STEPS="${N_STEPS:-50}"      # keep in (20,200) so contexts stay representative
+# SERIAL=1 (default): the PARALLEL tournament DEADLOCKS at ~50% — forking workers
+# after scml-agents imports TensorFlow inherits a held thread-lock and the driver
+# hangs forever on future.result(). Serial is deadlock-free (just slower). Set
+# SERIAL=0 to try parallel (fast, ~9 min, but expect the hang).
+SERIAL="${SERIAL:-1}"
 
 # Group this benchmark's per-world context-usage logs under one run dir so
 # benchmark.py can report the routing / fallback breakdown at the end.
@@ -41,6 +47,10 @@ EXTRA=""
 if [ "${INCLUDE_DEFAULTS:-0}" != "0" ]; then
   EXTRA="--include-defaults"
 fi
+if [ "${SERIAL}" != "0" ]; then
+  EXTRA="${EXTRA} --serial"
+fi
+echo "SERIAL=${SERIAL}  (--serial passed: $([ "${SERIAL}" != "0" ] && echo yes || echo no))"
 
 echo "=== Run benchmark ==="
 python scripts/benchmark.py \

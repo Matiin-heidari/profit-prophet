@@ -140,12 +140,45 @@ def report_context_usage(run: str | None = None) -> None:
           f"{100.0 * fallback / total:5.1f}%")
 
 
+def report_ranking(scores: pd.DataFrame) -> None:
+    """Rank agents by mean score from a per-agent-per-world scores frame.
+
+    Expects columns `agent_type` (already shortened) and `score`, one row per
+    agent per world. Shared by benchmark() and scripts/aggregate_benchmark.py so a
+    sharded run reports identically to a single run.
+    """
+    agg = (
+        scores.groupby("agent_type")["score"]
+        .agg(["mean", "std", "count"])
+        .sort_values("mean", ascending=False)
+        .reset_index()
+    )
+    agg.index = agg.index + 1  # 1-based rank
+    print("\n=== Tournament ranking (mean score / std / n, best first) ===")
+    print(agg.to_string())
+
+    mine = agg[agg["agent_type"].str.contains("MyAgent")]
+    if not mine.empty:
+        rank = int(mine.index[0])
+        my_score = float(mine.iloc[0]["mean"])
+        best_score = float(agg.iloc[0]["mean"])
+        print(
+            f"\nMyAgent: rank {rank} / {len(agg)}   "
+            f"score={my_score:.4f}   best={best_score:.4f}   "
+            f"gap_to_best={my_score - best_score:+.4f}   "
+            f"(worlds={int(mine.iloc[0]['count'])})"
+        )
+    else:
+        print("\nMyAgent not found in results (did it fail to instantiate?).")
+
+
 def benchmark(
     year: int | None = None,
     n_configs: int = 10,
     n_steps: int = 50,
     include_defaults: bool = False,
     serial: bool = False,
+    save_scores: str | None = None,
 ) -> None:
     if year is None:
         year = newest_agent_year()
@@ -178,41 +211,18 @@ def benchmark(
     elapsed = time.perf_counter() - start
 
     # --- Reporting -----------------------------------------------------------
-    total = results.total_scores.copy()  # type: ignore
-    total["agent_type"] = total["agent_type"].map(_short)
-    total = total.sort_values("score", ascending=False).reset_index(drop=True)
-    total.index = total.index + 1  # 1-based rank
+    # results.scores is the granular per-agent-per-world frame; the per-agent mean
+    # is the ranking. Working from it (not total_scores) means a sharded run can
+    # concatenate these frames and re-rank identically.
+    scores = results.scores.copy()  # type: ignore
+    scores["agent_type"] = scores["agent_type"].map(_short)
 
-    print("\n=== Tournament ranking (mean score, best first) ===")
-    print(total.to_string())
+    if save_scores:
+        os.makedirs(os.path.dirname(save_scores) or ".", exist_ok=True)
+        scores[["agent_type", "score"]].to_csv(save_scores, index=False)
+        print(f"Saved {len(scores)} agent-world scores -> {save_scores}")
 
-    # MyAgent's position
-    mine = total[total["agent_type"].str.contains("MyAgent")]
-    if not mine.empty:
-        rank = int(mine.index[0])
-        my_score = float(mine.iloc[0]["score"])
-        best_score = float(total.iloc[0]["score"])
-        print(
-            f"\nMyAgent: rank {rank} / {len(total)}   "
-            f"score={my_score:.4f}   best={best_score:.4f}   "
-            f"gap_to_best={my_score - best_score:+.4f}"
-        )
-    else:
-        print("\nMyAgent not found in results (did it fail to instantiate?).")
-
-    # Per-agent spread (so the noise floor among reference agents is visible).
-    try:
-        scores = results.scores.copy()  # type: ignore
-        scores["agent_type"] = scores["agent_type"].map(_short)
-        spread = (
-            scores.groupby("agent_type")["score"]
-            .agg(["mean", "std", "count"])
-            .sort_values("mean", ascending=False)
-        )
-        print("\n=== Per-agent score mean / std / n (reference spread) ===")
-        print(spread.to_string())
-    except Exception as e:
-        print(f"(per-agent spread unavailable: {e})")
+    report_ranking(scores)
 
     # Which per-context model (or fallback) MyAgent actually used, from its
     # per-world usage logs. Surfaces routing problems the score alone can't.
@@ -230,6 +240,9 @@ def main() -> None:
     p.add_argument("--include-defaults", action="store_true",
                    help="also include the weak DefaultAgentsOneShot2024 pool")
     p.add_argument("--serial", action="store_true")
+    p.add_argument("--save-scores", default=None,
+                   help="write per-agent-per-world scores to this CSV (for "
+                        "sharded runs; aggregate with scripts/aggregate_benchmark.py)")
     args = p.parse_args()
     benchmark(
         year=args.year,
@@ -237,6 +250,7 @@ def main() -> None:
         n_steps=args.n_steps,
         include_defaults=args.include_defaults,
         serial=args.serial,
+        save_scores=args.save_scores,
     )
 
 
