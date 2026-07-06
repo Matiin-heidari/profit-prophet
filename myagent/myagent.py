@@ -9,7 +9,10 @@ the authors and the ANAC 2024 SCML competition.
 
 import csv
 import os
+import random
 from pathlib import Path
+
+import numpy as np
 
 from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.agent import OneShotRLAgent
@@ -58,6 +61,16 @@ class MyAgent(OneShotRLAgent):
         )
 
         super().__init__(*args, **kwargs)
+
+        # Each loaded model has a stale SB3 `.seed` attribute baked in from
+        # training (see CLAUDE.md §5). SB3's load() -> _setup_model() calls
+        # set_random_seed(self.seed) for every model, which resets Python's
+        # global random/np.random to that fixed value on EVERY MyAgent
+        # construction (i.e. every world it plays in) - collapsing what should
+        # be independent per-world randomness across a whole tournament/shard.
+        # Reseed from OS entropy now that loading is done.
+        random.seed()
+        np.random.seed()
 
     def init(self):
         super().init()

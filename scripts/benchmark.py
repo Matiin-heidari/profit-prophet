@@ -22,6 +22,7 @@ import argparse
 import datetime
 import glob
 import os
+import random
 import sys
 import time
 
@@ -30,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
+import numpy as np
 import pandas as pd
 from negmas.helpers import humanize_time
 from scml.utils import anac2024_oneshot, DefaultAgentsOneShot2024
@@ -185,6 +187,17 @@ def benchmark(
     qualifiers, used_qualified = load_qualifiers(year)
     pool_kind = "qualifier" if used_qualified else "full-pool"
     print(f"Loaded {len(qualifiers)} {pool_kind} agents for {year}.")
+
+    # scml_agents has a module-level `random.seed(0)` (scml2022 oneshot team_131,
+    # imported transitively by get_agents/load_qualifiers above) that silently
+    # fixes Python's global random/np.random state on import. Left alone, every
+    # fresh process (e.g. every sharded SLURM task) draws the identical "first"
+    # sample from anac2024_oneshot's config generator (same n_steps, same
+    # per-level population split) instead of a genuinely different world.
+    # Reseed from OS entropy here, after the pollution and before the
+    # tournament call consumes it, to restore real per-run randomness.
+    random.seed()
+    np.random.seed()
 
     competitors = [MyAgent] + qualifiers
     if include_defaults:
