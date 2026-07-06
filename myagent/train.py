@@ -760,7 +760,7 @@ GAMMA = 0.95
 # Maps each reward-weight attribute to its environment variable and global
 # default. Single source of truth for both MyRewardFunction and the config dump.
 _REWARD_WEIGHT_ENV: dict[str, tuple[str, float]] = {
-    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 3.0),
+    "score_delta_weight": ("REWARD_SCORE_DELTA_WEIGHT", 100.0),
     "need_weight": ("REWARD_NEED_WEIGHT", 0.0),
     "shortfall_weight": ("REWARD_SHORTFALL_WEIGHT", 0.0),
     "overshoot_weight": ("REWARD_OVERSHOOT_WEIGHT", 0.0),

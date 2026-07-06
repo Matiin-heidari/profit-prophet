@@ -56,7 +56,7 @@ STEPS="${STEPS:-400000}"
 
 if [ "$ARM" = "pureprofit" ]; then
   # Baseline: score_delta only, all hand-shaping off.
-  export REWARD_SCORE_DELTA_WEIGHT=10.0
+  export REWARD_SCORE_DELTA_WEIGHT=100.0
   export REWARD_NEED_WEIGHT=0.0
   export REWARD_SHORTFALL_WEIGHT=0.0
   export REWARD_OVERSHOOT_WEIGHT=0.0

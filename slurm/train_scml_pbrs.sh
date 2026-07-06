@@ -20,7 +20,7 @@ cd "$SLURM_SUBMIT_DIR"
 # so this run is designed to show improved SAMPLE EFFICIENCY over pure profit:
 # the same/better score reached in fewer steps. Compare its 0_key/* learning
 # curves directly against pure_profit_400k.
-export REWARD_SCORE_DELTA_WEIGHT=10.0
+export REWARD_SCORE_DELTA_WEIGHT=100.0
 export REWARD_POTENTIAL_WEIGHT=0.5     # the only difference vs pure-profit
 export REWARD_NEED_WEIGHT=0.0
 export REWARD_SHORTFALL_WEIGHT=0.0

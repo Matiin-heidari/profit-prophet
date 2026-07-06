@@ -31,7 +31,7 @@ STEPS="${STEPS:-400000}"
 # TRAIN_CONTEXTS unset => all 6 contexts (override to train a subset).
 
 # --- REWARD: PURE-PROFIT (current setup; matches train_scml.sh) -------------
-export REWARD_SCORE_DELTA_WEIGHT=10.0
+export REWARD_SCORE_DELTA_WEIGHT=100.0
 export REWARD_NEED_WEIGHT=0.0
 export REWARD_SHORTFALL_WEIGHT=0.0
 export REWARD_OVERSHOOT_WEIGHT=0.0

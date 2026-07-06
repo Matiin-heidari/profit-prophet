@@ -46,7 +46,7 @@ So an env var here *overrides* the per-context defaults baked into
 
 | Variable | Global default | Description |
 | --- | --- | --- |
-| `REWARD_SCORE_DELTA_WEIGHT` | `3.0` | Weight on the change in the agent's score (`balance / initial_balance`) this step — the actual profit signal. |
+| `REWARD_SCORE_DELTA_WEIGHT` | `100.0` | Weight on the change in the agent's score (`balance / initial_balance`) this step — the actual profit signal. Kept large because PPO's critic fits raw (unnormalized) returns — too small a reward scale and it underfits, even though the policy loss itself is scale-insensitive (advantages are normalized per-batch). |
 | `REWARD_NEED_WEIGHT` | `0.0` | Penalty for unmet need (quantity still to be traded), normalized by capacity and scaled by time pressure. |
 | `REWARD_SHORTFALL_WEIGHT` | `0.0` | Penalty = unmet need × the world's actual shortfall penalty × time pressure. |
 | `REWARD_OVERSHOOT_WEIGHT` | `0.0` | Penalty for overshoot (committing beyond need). |
@@ -66,7 +66,7 @@ default is set.
 When the corresponding `REWARD_*` env var is **not** set, each context falls back
 to these defaults (from `_CONTEXT_DEFAULT_WEIGHTS` in `myagent/train.py`). Any
 weight not listed uses the global default from the table above (notably
-`score_delta_weight = 3.0` and `time_pressure_weight = 1.0`, which apply to every
+`score_delta_weight = 100.0` and `time_pressure_weight = 1.0`, which apply to every
 context). The Supplier and Consumer variants of each strength share the same
 weights — the buy/sell side is auto-detected from the context, so the same
 "good price" logic works on either side.

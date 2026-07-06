@@ -33,7 +33,7 @@ export N_EVAL_EPISODES=10
 export LOG_REWARD_COMPONENTS=1
 
 # Reward: pure profit only (score_delta), all hand-shaping off.
-export REWARD_SCORE_DELTA_WEIGHT=10.0
+export REWARD_SCORE_DELTA_WEIGHT=100.0
 export REWARD_NEED_WEIGHT=0.0
 export REWARD_SHORTFALL_WEIGHT=0.0
 export REWARD_OVERSHOOT_WEIGHT=0.0

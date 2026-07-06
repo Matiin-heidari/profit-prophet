@@ -23,8 +23,11 @@ cd "$SLURM_SUBMIT_DIR"
 # not the shaping. Either way this is the decisive diagnostic.
 #
 # score_delta is the only active term, so its weight is just a global reward
-# scale (PPO normalizes advantages); 10.0 keeps it out of tiny-number territory.
-export REWARD_SCORE_DELTA_WEIGHT=10.0
+# scale. PPO normalizes advantages per-batch (so the policy step is scale-
+# insensitive), but the critic's value loss regresses on raw returns
+# unnormalized -- too small a scale and it underfits. 100.0 keeps returns out
+# of tiny-number territory (raw score_delta ~3e-4/step -> ~3e-2 scaled).
+export REWARD_SCORE_DELTA_WEIGHT=100.0
 export REWARD_NEED_WEIGHT=0.0
 export REWARD_SHORTFALL_WEIGHT=0.0
 export REWARD_OVERSHOOT_WEIGHT=0.0
