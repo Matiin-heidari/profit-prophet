@@ -755,7 +755,7 @@ _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {}
 # Discount used for potential-based reward shaping (PBRS). Must match the RL
 # algorithm's discount (SB3 PPO default is 0.99) for the shaping to be exactly
 # policy-invariant.
-GAMMA = 0.99
+GAMMA = 0.95
 
 # Maps each reward-weight attribute to its environment variable and global
 # default. Single source of truth for both MyRewardFunction and the config dump.
@@ -1517,6 +1517,11 @@ def train_one(context_name, ntrain, params, queue):
             policy_kwargs=policy_kwargs,
             seed=seed,
             tensorboard_log=f"./{LOG_ROOT}/tensorboard_logs/{run_name}/{context_name}",
+
+            ent_coef=0.01,
+            gamma=GAMMA,
+            n_steps=512,
+            batch_size=256
         ) # type: ignore learning_rate must be passed by the algorithm itself
 
         model.learn(

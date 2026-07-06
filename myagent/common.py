@@ -19,7 +19,7 @@ from scml.oneshot.context import (
 from stable_baselines3 import A2C, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 
-TrainingAlgorithm: type[BaseAlgorithm] = PPO
+TrainingAlgorithm: type[PPO] = PPO
 """The algorithm used for training. You can use any stable_baselines3 algorithm or develop your own"""
 
 MODEL_PATH = Path(__file__).parent / "models" / "mymodel"
