@@ -1420,7 +1420,7 @@ def try_a_model(
         types=(OneShotRLAgent,),
         params=(
             dict(
-                models=[model_wrapper(model)],
+                models=[model_wrapper(model, deterministic=True)],
                 observation_managers=[MyObservationManager(context, continuous=True)],
                 action_managers=[FlexibleActionManager(context)],
             ),
@@ -1439,7 +1439,7 @@ def try_a_trained_model(context_name: str):
         types=(OneShotRLAgent,),
         params=(
             dict(
-                models=[model_wrapper(model)],
+                models=[model_wrapper(model, deterministic=True)],
                 observation_managers=[MyObservationManager(context, continuous=True)],
                 action_managers=[FlexibleActionManager(context)],
             ),
