@@ -742,14 +742,15 @@ class TrainingDiagnosticsCallback(BaseCallback):
 # is higher. Strong positions have pricing leverage and sell/buy easily, so margin
 # leads; Weak positions face scarce demand/supply, so coverage matters more (a
 # thin- or negative-margin deal can still beat a worse shortfall/disposal cost).
-_CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
+"""_CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     "StrongSupplierContext": {"margin_weight": 0.30, "need_weight": 0.02},
     "StrongConsumerContext": {"margin_weight": 0.30, "need_weight": 0.02},
     "BalancedSupplierContext": {"margin_weight": 0.30, "need_weight": 0.05},
     "BalancedConsumerContext": {"margin_weight": 0.30, "need_weight": 0.05},
     "WeakSupplierContext": {"margin_weight": 0.30, "need_weight": 0.10},
     "WeakConsumerContext": {"margin_weight": 0.30, "need_weight": 0.10},
-}
+}"""
+_CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {}
 
 # Discount used for potential-based reward shaping (PBRS). Must match the RL
 # algorithm's discount (SB3 PPO default is 0.99) for the shaping to be exactly
