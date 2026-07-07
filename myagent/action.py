@@ -123,12 +123,15 @@ class AcceptFlagActionManager(FlexibleActionManager):
 def make_action_manager(context, continuous: bool = False) -> ActionManager:
     """Create the action manager selected by the ACTION_MANAGER env var.
 
-    ``flexible`` (default) → scml's `FlexibleActionManager` (the action space
-    every model trained before 2026-07-06 uses); ``accept`` →
-    `AcceptFlagActionManager`. Training, eval and debug entrypoints must all
-    go through this factory so they stay consistent within a run.
+    ``accept`` (default since the 2026-07-07 decision to standardize on the
+    AcceptFlag space) → `AcceptFlagActionManager`; ``flexible`` → scml's
+    `FlexibleActionManager` (the action space every model trained before
+    2026-07-06 uses — set ACTION_MANAGER=flexible to retrain those).
+    Training, eval and debug entrypoints must all go through this factory so
+    they stay consistent within a run. Deployment is unaffected: `MyAgent`
+    matches the manager to each model's saved action space.
     """
-    kind = os.environ.get("ACTION_MANAGER", "flexible").strip().lower()
+    kind = os.environ.get("ACTION_MANAGER", "accept").strip().lower()
     if kind in ("accept", "accept_flag", "acceptflag"):
         return AcceptFlagActionManager(context=context, continuous=continuous)
     if kind in ("flexible", "default", ""):

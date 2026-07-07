@@ -1580,7 +1580,7 @@ def main(ntrain: int = NTRAINING):
     print(f"rl_agent_code: {_rl_agent_code()}")
     print(
         f"action_manager: {type(make_action_manager(make_context(CONTEXTS[0]))).__name__} "
-        f"(ACTION_MANAGER={os.environ.get('ACTION_MANAGER', 'flexible')})"
+        f"(ACTION_MANAGER={os.environ.get('ACTION_MANAGER', 'accept')})"
     )
     log_world = os.environ.get("LOG_WORLD", "0") != "0"
     print(f"log_world: {log_world} ({'debug/fail-fast' if log_world else 'robust'})")

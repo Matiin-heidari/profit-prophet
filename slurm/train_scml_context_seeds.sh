@@ -113,6 +113,9 @@ for i in range(torch.cuda.device_count()):
 PY
 
 echo "=== Start training (${STEPS} steps, ${CONTEXT}, ARM=${ARM}, seed ${SEED}) ==="
+# Pin the pre-2026-07-07 action space: this script reproduces arms that were
+# defined on FlexibleActionManager (the in-code default is now "accept").
+export ACTION_MANAGER="${ACTION_MANAGER:-flexible}"
 python -m myagent.train "${STEPS}"
 echo "=== Done ${CONTEXT} ARM=${ARM} seed ${SEED} ==="
 date

@@ -60,6 +60,9 @@ echo "ARM=${ARM}  SEED=${SEED}  REWARD_POTENTIAL_WEIGHT=${REWARD_POTENTIAL_WEIGH
 hostname; date
 git rev-parse --short HEAD; git branch --show-current
 
+# Pin the pre-2026-07-07 action space: this script reproduces arms that were
+# defined on FlexibleActionManager (the in-code default is now "accept").
+export ACTION_MANAGER="${ACTION_MANAGER:-flexible}"
 python -m myagent.train 400000
 
 echo "=== Done ${RUN_NAME} ==="

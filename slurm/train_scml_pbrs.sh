@@ -51,5 +51,8 @@ echo "EVAL_FREQ=${EVAL_FREQ}  N_EVAL_EPISODES=${N_EVAL_EPISODES}"
 echo "REWARD_SCORE_DELTA_WEIGHT=${REWARD_SCORE_DELTA_WEIGHT}  REWARD_POTENTIAL_WEIGHT=${REWARD_POTENTIAL_WEIGHT}  (all other shaping = 0)"
 
 echo "=== Start training (400k, pure profit + PBRS) ==="
+# Pin the pre-2026-07-07 action space: this script reproduces arms that were
+# defined on FlexibleActionManager (the in-code default is now "accept").
+export ACTION_MANAGER="${ACTION_MANAGER:-flexible}"
 python -m myagent.train 400000
 echo "=== Done ==="; date
