@@ -25,11 +25,22 @@ import os
 import random
 import sys
 import time
+from math import comb
 
 # Allow running as `python scripts/benchmark.py` from the repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+
+# --model-dir must take effect BEFORE `from myagent...` below: MODEL_PATH is
+# resolved from the MODEL_DIR env var at import time (myagent/common.py). This
+# pre-scan sets the env var (which forked tournament workers also inherit); the
+# real parser in main() re-declares the flag so it shows up in --help.
+_pre = argparse.ArgumentParser(add_help=False)
+_pre.add_argument("--model-dir", default=None)
+_pre_args, _ = _pre.parse_known_args()
+if _pre_args.model_dir:
+    os.environ["MODEL_DIR"] = _pre_args.model_dir
 
 import numpy as np
 import pandas as pd
@@ -37,7 +48,7 @@ from negmas.helpers import humanize_time
 from scml.utils import anac2024_oneshot, DefaultAgentsOneShot2024
 from scml_agents import get_agents
 
-from myagent.common import LOG_ROOT
+from myagent.common import LOG_ROOT, MODEL_PATH
 from myagent.myagent import MyAgent
 
 
@@ -97,6 +108,53 @@ def load_qualifiers(year: int) -> tuple[list, bool]:
         )
     )
     return agents, False
+
+
+def assignment_count(n_competitors: int, n_per_world: int) -> int:
+    """Number of agent assignments a round-robin config produces.
+
+    anac2024_oneshot with round_robin (the default) runs every C(N, k)
+    competitor combination, and the assigner emits k cyclic-rotation worlds per
+    combination (the max_worlds_per_config=None branch), so a single config
+    yields C(N, k) * k worlds. This is the "Will run <n> different agent
+    assignments" number in the tournament log — it drives per-shard wall time.
+    """
+    return comb(n_competitors, n_per_world) * n_per_world
+
+
+def choose_competitors_per_world(
+    n_competitors: int, max_assignments: int, lo: int = 2, hi: int = 4
+) -> int:
+    """Pick n_competitors_per_world so a shard stays within max_assignments.
+
+    Left to itself, anac2024_oneshot draws n_competitors_per_world uniformly
+    from [2, min(4, N)]. For N=11 that is 110 / 495 / 1320 assignments — the
+    k=4 draw (1320) blows past any reasonable wall-time budget and times shards
+    out, and note max_worlds_per_config CANNOT fix this: it caps worlds per
+    competitor-combination, but the C(N, k) combination count is fixed by the
+    round-robin, so the floor is exactly assignment_count(N, k).
+
+    So we constrain k instead: among the feasible values (those whose
+    assignment_count <= max_assignments) we sample uniformly, preserving some of
+    the original k-diversity across shards while guaranteeing the cap. If none
+    is feasible (a very large pool) we fall back to the smallest k and warn —
+    the count may then exceed the cap, but nothing short of shrinking the pool
+    or dropping round_robin can help there.
+    """
+    hi = min(hi, n_competitors)
+    feasible = [
+        k for k in range(lo, hi + 1)
+        if assignment_count(n_competitors, k) <= max_assignments
+    ]
+    if not feasible:
+        k = lo
+        print(
+            f"WARNING: no n_competitors_per_world in [{lo}, {hi}] keeps "
+            f"assignments <= {max_assignments} for {n_competitors} competitors "
+            f"(k={k} -> {assignment_count(n_competitors, k)}); using {k} anyway."
+        )
+        return k
+    return random.choice(feasible)
 
 
 def report_context_usage(run: str | None = None) -> None:
@@ -181,7 +239,20 @@ def benchmark(
     include_defaults: bool = False,
     serial: bool = False,
     save_scores: str | None = None,
+    max_assignments: int = 500,
+    n_competitors_per_world: int | None = None,
 ) -> None:
+    # Which model set MyAgent will load (MODEL_DIR env var / --model-dir).
+    # Fail fast here — inside the tournament a missing model surfaces as
+    # hundreds of confusing per-world construction failures instead.
+    model_glob = sorted(glob.glob(f"{MODEL_PATH}*Context.zip"))
+    print(f"Model set: {MODEL_PATH.parent}  ({len(model_glob)} models)")
+    if len(model_glob) < 6:
+        raise SystemExit(
+            f"Expected 6 models at {MODEL_PATH}*Context.zip, found "
+            f"{len(model_glob)} — check MODEL_DIR/--model-dir (CWD: {os.getcwd()})"
+        )
+
     if year is None:
         year = newest_agent_year()
     qualifiers, used_qualified = load_qualifiers(year)
@@ -203,9 +274,22 @@ def benchmark(
     if include_defaults:
         competitors += list(DefaultAgentsOneShot2024)
 
+    # Fix n_competitors_per_world so a shard's assignment count stays bounded.
+    # Otherwise anac2024_oneshot draws it randomly and a k=4 draw explodes to
+    # C(N,4)*4 assignments (1320 for N=11), which times shards out. See
+    # choose_competitors_per_world for why this — not max_worlds_per_config —
+    # is the right lever.
+    if n_competitors_per_world is None:
+        n_competitors_per_world = choose_competitors_per_world(
+            len(competitors), max_assignments
+        )
+    n_assignments = assignment_count(len(competitors), n_competitors_per_world)
+
     print(
         f"Running tournament: {len(competitors)} competitors, "
-        f"n_configs={n_configs}, n_steps={n_steps} "
+        f"n_configs={n_configs}, n_steps={n_steps}, "
+        f"n_competitors_per_world={n_competitors_per_world} "
+        f"(~{n_assignments} assignments/config, cap {max_assignments}) "
         f"({'serial' if serial else 'parallel'})"
     )
 
@@ -215,6 +299,7 @@ def benchmark(
         verbose=True,
         n_steps=n_steps,
         n_configs=n_configs,
+        n_competitors_per_world=n_competitors_per_world,
         debug=False,
         parallelism="serial" if serial else "parallel",
         # Don't reveal type/position in names — keeps the comparison honest.
@@ -256,6 +341,17 @@ def main() -> None:
     p.add_argument("--save-scores", default=None,
                    help="write per-agent-per-world scores to this CSV (for "
                         "sharded runs; aggregate with scripts/aggregate_benchmark.py)")
+    p.add_argument("--max-assignments", type=int, default=500,
+                   help="cap on agent assignments per config; n_competitors_per_world "
+                        "is chosen to stay within it (default 500)")
+    p.add_argument("--n-competitors-per-world", type=int, default=None,
+                   help="force n_competitors_per_world (overrides --max-assignments; "
+                        "default: auto-pick within the cap)")
+    p.add_argument("--model-dir", default=None,
+                   help="directory with the 6 mymodel<Context>.zip files MyAgent "
+                        "loads (e.g. candidate_models/flex); default: "
+                        "myagent/models. Equivalent to the MODEL_DIR env var; "
+                        "applied by the import-time pre-scan above")
     args = p.parse_args()
     benchmark(
         year=args.year,
@@ -264,6 +360,8 @@ def main() -> None:
         include_defaults=args.include_defaults,
         serial=args.serial,
         save_scores=args.save_scores,
+        max_assignments=args.max_assignments,
+        n_competitors_per_world=args.n_competitors_per_world,
     )
 
 

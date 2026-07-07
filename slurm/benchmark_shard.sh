@@ -29,6 +29,11 @@ cd "$SLURM_SUBMIT_DIR"
 
 YEAR="${YEAR:-2024}"
 N_STEPS="${N_STEPS:-50}"
+# Optional alternative model set (e.g. candidate_models/flex), relative to the
+# repo root. Empty = the canonical myagent/models. Exported so MyAgent picks it
+# up in every process of this task (myagent/common.py reads MODEL_DIR).
+MODEL_DIR="${MODEL_DIR:-}"
+export MODEL_DIR
 # One shared run name across all shards of this array (SLURM_ARRAY_JOB_ID is the
 # array's parent id, identical for every task) so scores + context-usage logs
 # collect into one place.
@@ -38,7 +43,7 @@ mkdir -p "$SCORES_DIR"
 export RUN_NAME
 export LOG_CONTEXT_USAGE=1
 
-echo "=== shard ${SLURM_ARRAY_TASK_ID}  RUN_NAME=${RUN_NAME}  YEAR=${YEAR}  N_STEPS=${N_STEPS} ==="
+echo "=== shard ${SLURM_ARRAY_TASK_ID}  RUN_NAME=${RUN_NAME}  YEAR=${YEAR}  N_STEPS=${N_STEPS}  MODEL_DIR=${MODEL_DIR:-myagent/models (default)} ==="
 hostname; date
 git rev-parse --short HEAD; git branch --show-current
 

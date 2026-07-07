@@ -22,8 +22,17 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 TrainingAlgorithm: type[PPO] = PPO
 """The algorithm used for training. You can use any stable_baselines3 algorithm or develop your own"""
 
-MODEL_PATH = Path(__file__).parent / "models" / "mymodel"
-"""The path in which train.py saves the trained model and from which myagent.py loads it."""
+_model_dir = os.environ.get("MODEL_DIR", "").strip()
+MODEL_PATH = (
+    Path(_model_dir) if _model_dir else Path(__file__).parent / "models"
+) / "mymodel"
+"""The path in which train.py saves the trained model and from which myagent.py loads it.
+
+The MODEL_DIR env var overrides the directory (resolved from the CWD if
+relative), so alternative model sets (e.g. candidate_models/flex vs
+candidate_models/accept) can be benchmarked without ever moving files in and
+out of myagent/models. Unset = the canonical myagent/models (the only mode
+that exists in a submission)."""
 
 LOG_ROOT = "log"
 """Parent directory (relative to the run's CWD) for all log subfolders:

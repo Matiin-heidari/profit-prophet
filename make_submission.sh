@@ -35,6 +35,7 @@ zip -r "$OUTPUT" . \
     -x ".pre-commit-config.yaml" \
     -x "make_submission.sh" \
     -x "make_submission.bat" \
+    -x "candidate_models/*" \
     -x "dist/*" \
     -x "*.egg-info/*" \
     -x ".DS_Store" \
