@@ -1592,10 +1592,14 @@ def train_one(context_name, ntrain, params, queue):
     else:
         model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
 
+    # PROGRESS_BARS=0 disables the tqdm bars
+    progress_bars = os.environ.get("PROGRESS_BARS", "1") != "0"
+
     callbacks: list[BaseCallback] = [
-        ProgressCallback(queue, context_name),
         TrainingDiagnosticsCallback(log_freq=diagnostics_freq),
     ]
+    if progress_bars:
+        callbacks.insert(0, ProgressCallback(queue, context_name))
 
     if checkpoint_freq > 0:
         callbacks.append(
@@ -1711,6 +1715,7 @@ def main(ntrain: int = NTRAINING):
     print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
     print(f"checkpoint_freq: {os.environ.get('CHECKPOINT_FREQ', '100000')}")
     print(f"resume: {os.environ.get('RESUME', '0')}")
+    print(f"progress_bars: {os.environ.get('PROGRESS_BARS', '1')}")
     print(f"rl_agent_code: {_rl_agent_code()}")
     print(
         f"action_manager: {type(make_action_manager(make_context(CONTEXTS[0]))).__name__} "
@@ -1728,15 +1733,20 @@ def main(ntrain: int = NTRAINING):
         print(f"{context_name}: {nonzero}")
 
 
+    progress_bars = os.environ.get("PROGRESS_BARS", "1") != "0"
     queue = Queue()
 
     for i in range(0, len(CONTEXTS), n_parallel):
         batch = CONTEXTS[i : i + n_parallel]
 
-        bars = {
-            name: tqdm(total=ntrain, desc=name, position=j, leave=True)
-            for j, name in enumerate(batch)
-        }
+        if progress_bars:
+            bars = {
+                name: tqdm(total=ntrain, desc=name, position=j, leave=True)
+                for j, name in enumerate(batch)
+            }
+        else:
+            bars = {}
+            print(f"=== batch: {batch} ===")
 
         processes = [
             Process(target=train_one, args=(context_name, ntrain, params, queue))
@@ -1752,9 +1762,12 @@ def main(ntrain: int = NTRAINING):
             context_name, steps = queue.get()
 
             if steps is None:
-                bars[context_name].close()
+                if context_name in bars:
+                    bars[context_name].close()
+                else:
+                    print(f"=== finished: {context_name} ===")
                 finished += 1
-            else:
+            elif context_name in bars:
                 bars[context_name].update(steps)
 
         for process in processes:
