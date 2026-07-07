@@ -36,6 +36,7 @@ TRAIN_CONTEXTS=WeakSupplierContext RUN_NAME=experiment1 LOG_REWARD_COMPONENTS=1 
 | `N_EVAL_EPISODES` | `3` | Number of evaluation worlds run per evaluation. |
 | `DIAGNOSTICS_FREQ` | `steps / 20` | Timesteps between training-diagnostics logging (observation/action/reward summaries). |
 | `CHECKPOINT_FREQ` | `100000` | Timesteps between step-tagged model checkpoints (`<model>_ckpt<steps>.zip`). `0` disables. Checkpoints let a timed-out long run resume and keep intermediate policies comparable across step budgets. The best-eval model is additionally saved to `<model>_best.zip` (+ `_best_meta.json` with score/step) whenever the fixed-world eval score sets a new record. |
+| `MAX_PARALLEL_MODELS` | `3` | Cap on how many context models train simultaneously (each uses a learner + up to 8 env workers ≈ 9 busy cores). `3` fits a 48-CPU allocation (6 contexts = 2 batches); `6` on a 64-CPU node trains all contexts in one batch — half the wall time, identical training dynamics. |
 | `PROGRESS_BARS` | `1` | `0` disables the tqdm progress bars and their per-step IPC — use in batch jobs, where the bars only bloat the `.err` logs (tens of MB at 1M+ steps). |
 | `RESUME` | `0` | `1` = continue training from the newest `_ckpt<steps>.zip` toward the same total step count (`reset_num_timesteps=False`, TB curves continue; the best-model record is restored from the sidecar json). No checkpoint found = starts fresh. |
 | `RL_AGENT_CODE` | `On` | Short code used to identify our RL agent in `world.scores()` during evaluation. |

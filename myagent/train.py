@@ -1703,7 +1703,12 @@ def main(ntrain: int = NTRAINING):
     else:
         total_cores = os.cpu_count() or 1
 
-    n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), 3)
+    # MAX_PARALLEL_MODELS caps how many context models train at once (each one
+    # runs its own learner + up to 8 env workers, ~9 busy cores). Default 3
+    # matches the historical 48-CPU allocations (6 contexts = 2 batches); on a
+    # 64-CPU node MAX_PARALLEL_MODELS=6 trains all contexts in one batch.
+    max_parallel = int(os.environ.get("MAX_PARALLEL_MODELS", "3"))
+    n_parallel = min(len(CONTEXTS), max(1, (total_cores - 2) // 2), max(1, max_parallel))
 
     params = get_parallelization_params(n_models_parallel=n_parallel)
 
