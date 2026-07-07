@@ -1,9 +1,12 @@
 # trains an RL model
 import atexit
 import csv
+import glob
+import json
 import logging
 import os
 import random
+import re
 from multiprocessing import Process, Queue
 from typing import Any
 
@@ -469,8 +472,51 @@ class ProgressCallback(BaseCallback):
         pass
 
 
+class CheckpointCallback(BaseCallback):
+    """Save step-tagged model checkpoints during training.
+
+    Long runs (1–3M steps ≈ several hours) must survive wall-clock timeouts
+    and crashes: `train_one` can resume from the newest checkpoint (RESUME=1).
+    Step-tagged files also keep intermediate policies comparable — e.g. the
+    400k checkpoint of a 3M run lines up with the 400k-step baseline
+    (`baseline/400k_steps/`). Files: ``<base>_ckpt<steps>.zip`` (they never
+    match MyAgent's canonical ``mymodel<Context>.zip`` pattern, so deployment
+    and the benchmark's model-count check are unaffected).
+    """
+
+    def __init__(self, base_path, save_freq: int):
+        super().__init__()
+        self.base_path = str(base_path)
+        self.save_freq = max(1, save_freq)
+        # Start from the current step so a resumed run doesn't immediately
+        # re-save the checkpoint it was loaded from.
+        self.last_save_step: int | None = None
+
+    def _on_step(self) -> bool:
+        if self.last_save_step is None:
+            self.last_save_step = self.num_timesteps
+            return True
+        if self.num_timesteps - self.last_save_step < self.save_freq:
+            return True
+        self.last_save_step = self.num_timesteps
+        try:
+            self.model.save(f"{self.base_path}_ckpt{self.num_timesteps}")
+        except Exception as e:
+            # Checkpointing must never stop training.
+            print(f"[checkpoint failed] {self.base_path}: {e}")
+        return True
+
+
 class EvaluationCallback(BaseCallback):
-    """Log evaluation metrics to TensorBoard."""
+    """Log evaluation metrics to TensorBoard and keep the best-eval model.
+
+    If ``best_path`` is given, the model is saved there whenever the mean
+    ``score`` over the fixed eval worlds sets a new record, with a sidecar
+    ``<best_path>_meta.json`` recording the score/step. The sidecar is read
+    back on construction so a resumed run keeps the historical record instead
+    of overwriting the best model with a worse one. This protects against
+    late-training decline (observed: FLEX StrongSupplier, §4/CLAUDE.md).
+    """
 
     # Headline metrics surfaced in their own dashboard category. The "0_" prefix
     # sorts this group to the top in TensorBoard (categories are ordered
@@ -490,12 +536,43 @@ class EvaluationCallback(BaseCallback):
         context_name: str,
         eval_freq: int,
         n_eval_episodes: int,
+        best_path: str | None = None,
     ):
         super().__init__()
         self.context_name = context_name
         self.eval_freq = max(1, eval_freq)
         self.n_eval_episodes = max(1, n_eval_episodes)
         self.last_eval_step = 0
+
+        self.best_path = str(best_path) if best_path else None
+        self.best_score = -np.inf
+        self.best_step = 0
+        if self.best_path and os.path.exists(f"{self.best_path}_meta.json"):
+            try:
+                with open(f"{self.best_path}_meta.json") as f:
+                    meta = json.load(f)
+                self.best_score = float(meta.get("score", -np.inf))
+                self.best_step = int(meta.get("step", 0))
+                print(
+                    f"[best-model] {self.context_name}: resuming record "
+                    f"{self.best_score:.4f} @ {self.best_step}"
+                )
+            except Exception:
+                pass
+
+    def _maybe_save_best(self, score: float) -> None:
+        if self.best_path is None or score <= self.best_score:
+            return
+        self.best_score = score
+        self.best_step = self.num_timesteps
+        try:
+            self.model.save(self.best_path)
+            with open(f"{self.best_path}_meta.json", "w") as f:
+                json.dump(
+                    {"score": self.best_score, "step": self.best_step}, f
+                )
+        except Exception as e:
+            print(f"[best-model save failed] {self.context_name}: {e}")
 
     def _on_step(self) -> bool:
         if self.num_timesteps - self.last_eval_step < self.eval_freq:
@@ -523,6 +600,9 @@ class EvaluationCallback(BaseCallback):
 
                 mean_value = float(np.mean(values))
 
+                if metric_name == "score":
+                    self._maybe_save_best(mean_value)
+
                 # Surface the most important metrics in a top-sorted category.
                 if metric_name in self.KEY_METRICS:
                     self.logger.record(f"0_key/{metric_name}", mean_value)
@@ -532,6 +612,9 @@ class EvaluationCallback(BaseCallback):
                 self.logger.record(f"eval/{metric_name}_std", float(np.std(values)))
                 self.logger.record(f"eval/{metric_name}_min", float(np.min(values)))
                 self.logger.record(f"eval/{metric_name}_max", float(np.max(values)))
+
+            if self.best_path is not None and np.isfinite(self.best_score):
+                self.logger.record("0_key/best_score_so_far", float(self.best_score))
 
             self.logger.record("eval/failed", 0)
 
@@ -1465,6 +1548,19 @@ def try_a_trained_model(context_name: str):
     return world
 
     
+def _newest_checkpoint(base_path) -> tuple[str, int] | None:
+    """Return (path, steps) of the highest-step checkpoint for a model base."""
+    best: tuple[str, int] | None = None
+    for path in glob.glob(f"{base_path}_ckpt*.zip"):
+        m = re.search(r"_ckpt(\d+)\.zip$", path)
+        if not m:
+            continue
+        steps = int(m.group(1))
+        if best is None or steps > best[1]:
+            best = (path, steps)
+    return best
+
+
 def train_one(context_name, ntrain, params, queue):
     """Train one model for one context."""
     print(f"Training as {context_name}")
@@ -1474,6 +1570,11 @@ def train_one(context_name, ntrain, params, queue):
     eval_freq = int(os.environ.get("EVAL_FREQ", str(max(ntrain // 5, 1))))
     n_eval_episodes = int(os.environ.get("N_EVAL_EPISODES", "3"))
     diagnostics_freq = int(os.environ.get("DIAGNOSTICS_FREQ", str(max(ntrain // 20, 1))))
+    # Step-tagged checkpoints (CHECKPOINT_FREQ steps apart; 0 disables).
+    checkpoint_freq = int(os.environ.get("CHECKPOINT_FREQ", "100000"))
+    # RESUME=1: continue from the newest _ckpt<steps>.zip toward the SAME
+    # ntrain total (a task requeued after a timeout picks up where it died).
+    resume = os.environ.get("RESUME", "0") != "0"
 
     # Training seed (network init, PPO action sampling, env seeding via SB3).
     # Set SEED to make a run reproducible and to pair seeds across A/B arms
@@ -1481,10 +1582,25 @@ def train_one(context_name, ntrain, params, queue):
     seed_str = os.environ.get("SEED")
     seed = int(seed_str) if seed_str not in (None, "") else None
 
+    # Model save path. Seeded runs save to a run-scoped filename so parallel A/B
+    # arms never collide with each other or with the canonical models.
+    if seed is not None:
+        model_path = (
+            MODEL_PATH.parent
+            / f"{MODEL_PATH.name}{context_name}_{run_name}_seed{seed}"
+        )
+    else:
+        model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
+
     callbacks: list[BaseCallback] = [
         ProgressCallback(queue, context_name),
         TrainingDiagnosticsCallback(log_freq=diagnostics_freq),
     ]
+
+    if checkpoint_freq > 0:
+        callbacks.append(
+            CheckpointCallback(base_path=model_path, save_freq=checkpoint_freq)
+        )
 
     if eval_freq > 0 and n_eval_episodes > 0:
         callbacks.append(
@@ -1492,6 +1608,7 @@ def train_one(context_name, ntrain, params, queue):
                 context_name=context_name,
                 eval_freq=eval_freq,
                 n_eval_episodes=n_eval_episodes,
+                best_path=f"{model_path}_best",
             )
         )
 
@@ -1505,40 +1622,57 @@ def train_one(context_name, ntrain, params, queue):
             )
         )
 
-        policy_kwargs = dict(
-            net_arch=[128, 128]
-        )
+        tensorboard_log = f"./{LOG_ROOT}/tensorboard_logs/{run_name}/{context_name}"
 
-        model = TrainingAlgorithm(
-            "MlpPolicy",
-            env,
-            verbose=0,
-            policy_kwargs=policy_kwargs,
-            seed=seed,
-            tensorboard_log=f"./{LOG_ROOT}/tensorboard_logs/{run_name}/{context_name}",
-
-            ent_coef=0.01,
-            gamma=GAMMA,
-            n_steps=512,
-            batch_size=256
-        ) # type: ignore learning_rate must be passed by the algorithm itself
-
-        model.learn(
-            total_timesteps=ntrain,
-            progress_bar=False,
-            callback=callbacks,
-            tb_log_name=context_name,
-        )
-
-        # Seeded runs save to a run-scoped filename so parallel A/B arms never
-        # collide with each other or with the canonical (deployed) models.
-        if seed is not None:
-            model_path = (
-                MODEL_PATH.parent
-                / f"{MODEL_PATH.name}{context_name}_{run_name}_seed{seed}"
+        checkpoint = _newest_checkpoint(model_path) if resume else None
+        if checkpoint is not None:
+            checkpoint_path, checkpoint_steps = checkpoint
+            model = TrainingAlgorithm.load(checkpoint_path, env=env)
+            model.tensorboard_log = tensorboard_log
+            remaining = max(0, ntrain - model.num_timesteps)
+            print(
+                f"[resume] {context_name}: loaded {checkpoint_path} "
+                f"({model.num_timesteps} steps done, {remaining} to go)"
             )
+            if remaining > 0:
+                # reset_num_timesteps=False continues the step counter, so the
+                # target total is num_timesteps + remaining == ntrain and the
+                # TB curves carry on at the right x position.
+                model.learn(
+                    total_timesteps=remaining,
+                    progress_bar=False,
+                    callback=callbacks,
+                    tb_log_name=context_name,
+                    reset_num_timesteps=False,
+                )
         else:
-            model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
+            if resume:
+                print(f"[resume] {context_name}: no checkpoint found, starting fresh")
+            policy_kwargs = dict(
+                net_arch=[128, 128]
+            )
+
+            model = TrainingAlgorithm(
+                "MlpPolicy",
+                env,
+                verbose=0,
+                policy_kwargs=policy_kwargs,
+                seed=seed,
+                tensorboard_log=tensorboard_log,
+
+                ent_coef=0.01,
+                gamma=GAMMA,
+                n_steps=512,
+                batch_size=256
+            ) # type: ignore learning_rate must be passed by the algorithm itself
+
+            model.learn(
+                total_timesteps=ntrain,
+                progress_bar=False,
+                callback=callbacks,
+                tb_log_name=context_name,
+            )
+
         model.save(model_path)
 
     finally:
@@ -1575,6 +1709,8 @@ def main(ntrain: int = NTRAINING):
     print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
     print(f"seed: {os.environ.get('SEED', 'None (nondeterministic)')}")
     print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
+    print(f"checkpoint_freq: {os.environ.get('CHECKPOINT_FREQ', '100000')}")
+    print(f"resume: {os.environ.get('RESUME', '0')}")
     print(f"rl_agent_code: {_rl_agent_code()}")
     print(
         f"action_manager: {type(make_action_manager(make_context(CONTEXTS[0]))).__name__} "
