@@ -30,10 +30,9 @@ class AcceptFlagActionManager(FlexibleActionManager):
     """`FlexibleActionManager` plus an explicit per-partner ACCEPT value.
 
     The base manager only emits ACCEPT when the decoded offer happens to
-    *exactly equal* the partner's current offer (quantity AND price bin) — a
-    needle-in-a-haystack copying task for the policy (CLAUDE.md §10). This
-    manager reserves one extra value at the top of each partner's quantity
-    dimension:
+    *exactly equal* the partner's current offer (quantity AND price bin).
+    This manager reserves one extra value at the top of each partner's
+    quantity dimension:
 
     - ``q <= max_quantity``    → exactly the base manager's semantics.
     - ``q == max_quantity + 1`` → "close with this partner": ACCEPT their
@@ -123,13 +122,11 @@ class AcceptFlagActionManager(FlexibleActionManager):
 def make_action_manager(context, continuous: bool = False) -> ActionManager:
     """Create the action manager selected by the ACTION_MANAGER env var.
 
-    ``accept`` (default since the 2026-07-07 decision to standardize on the
-    AcceptFlag space) → `AcceptFlagActionManager`; ``flexible`` → scml's
-    `FlexibleActionManager` (the action space every model trained before
-    2026-07-06 uses — set ACTION_MANAGER=flexible to retrain those).
-    Training, eval and debug entrypoints must all go through this factory so
-    they stay consistent within a run. Deployment is unaffected: `MyAgent`
-    matches the manager to each model's saved action space.
+    ``accept`` (default) → `AcceptFlagActionManager`; ``flexible`` → scml's
+    `FlexibleActionManager` Training, eval and debug entrypoints must all go
+    through this factory so they stay consistent within a run.
+    Deployment is unaffected: `MyAgent` matches the manager to
+    each model's saved action space.
     """
     kind = os.environ.get("ACTION_MANAGER", "accept").strip().lower()
     if kind in ("accept", "accept_flag", "acceptflag"):

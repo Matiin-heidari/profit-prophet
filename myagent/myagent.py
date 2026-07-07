@@ -85,13 +85,8 @@ class MyAgent(OneShotRLAgent):
 
         super().__init__(*args, **kwargs)
 
-        # Each loaded model has a stale SB3 `.seed` attribute baked in from
-        # training (see CLAUDE.md §5). SB3's load() -> _setup_model() calls
-        # set_random_seed(self.seed) for every model, which resets Python's
-        # global random/np.random to that fixed value on EVERY MyAgent
-        # construction (i.e. every world it plays in) - collapsing what should
-        # be independent per-world randomness across a whole tournament/shard.
-        # Reseed from OS entropy now that loading is done.
+       
+        # Reseed from OS entropy now that loading is done. Ensures benchmarks are different.
         random.seed()
         np.random.seed()
 
@@ -199,8 +194,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Only forward args the user actually supplied, so with no CLI args the
-    # runner falls back entirely to its own defaults.
     kwargs = {}
     if args.n_steps is not None:
         kwargs["n_steps"] = args.n_steps

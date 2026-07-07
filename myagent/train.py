@@ -34,7 +34,7 @@ from .common import (
     make_context,
 )
 
-NTRAINING = 300000  # number of training steps
+NTRAINING = 300000  # number of training steps. Can alse be passed as an argument.
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -753,9 +753,7 @@ class TrainingDiagnosticsCallback(BaseCallback):
 }"""
 _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {}
 
-# Discount used for potential-based reward shaping (PBRS). Must match the RL
-# algorithm's discount (SB3 PPO default is 0.99) for the shaping to be exactly
-# policy-invariant.
+# Discount used by both PPO and PBRS. They need to be identical.
 GAMMA = 0.95
 
 # Maps each reward-weight attribute to its environment variable and global
