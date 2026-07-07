@@ -21,6 +21,7 @@ Usage:
 import argparse
 import datetime
 import glob
+import hashlib
 import os
 import random
 import sys
@@ -108,6 +109,53 @@ def load_qualifiers(year: int) -> tuple[list, bool]:
         )
     )
     return agents, False
+
+
+def derive_shard_seed(shard_seed: str, task_id: str) -> int:
+    """Derive a stable per-shard RNG seed from (SHARD_SEED, array task id).
+
+    Two benchmark runs given the SAME SHARD_SEED (e.g. two model sets submitted
+    by benchmark_candidates.sh) get identical seeds per shard index, so their
+    config draws — world topology, n_steps, population split, and the
+    n_competitors_per_world choice — are identical and per-shard score deltas
+    become meaningful (paired comparison). Different SHARD_SEEDs (or different
+    shard indices) diverge.
+
+    Uses sha256, NOT Python's hash(): the latter is salted per process
+    (PYTHONHASHSEED), so it would silently break the pairing across jobs.
+    """
+    digest = hashlib.sha256(f"{shard_seed}:{task_id}".encode()).digest()
+    return int.from_bytes(digest[:4], "big")
+
+
+def reseed_after_import_pollution(shard_seed: str | None) -> None:
+    """Reseed random/np.random after scml_agents' import-time random.seed(0).
+
+    scml_agents has a module-level `random.seed(0)` (scml2022 oneshot team_131,
+    imported transitively by get_agents/load_qualifiers) that silently fixes
+    Python's global random/np.random state on import. Left alone, every fresh
+    process (e.g. every sharded SLURM task) draws the identical "first" sample
+    from anac2024_oneshot's config generator instead of a genuinely different
+    world. This MUST be called after the polluting import and before the
+    tournament call consumes the RNG.
+
+    shard_seed=None restores real per-run randomness (OS entropy — the
+    default). A non-empty shard_seed instead pins the draw deterministically
+    per shard for paired set-vs-set benchmarks; see derive_shard_seed. Note
+    pairing covers the CONFIG draw only, not exact world replay: MyAgent
+    reseeds from OS entropy on construction (the RNG-pollution workaround in
+    myagent.py) and in-world negotiation randomness differs — read paired runs
+    as variance-reduced per-shard deltas, not identical scores.
+    """
+    if shard_seed:
+        task_id = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
+        seed = derive_shard_seed(shard_seed, task_id)
+        print(f"Paired config draw: SHARD_SEED={shard_seed} task={task_id} -> seed {seed}")
+        random.seed(seed)
+        np.random.seed(seed)
+    else:
+        random.seed()
+        np.random.seed()
 
 
 def assignment_count(n_competitors: int, n_per_world: int) -> int:
@@ -241,6 +289,7 @@ def benchmark(
     save_scores: str | None = None,
     max_assignments: int = 500,
     n_competitors_per_world: int | None = None,
+    shard_seed: str | None = None,
 ) -> None:
     # Which model set MyAgent will load (MODEL_DIR env var / --model-dir).
     # Fail fast here — inside the tournament a missing model surfaces as
@@ -259,16 +308,9 @@ def benchmark(
     pool_kind = "qualifier" if used_qualified else "full-pool"
     print(f"Loaded {len(qualifiers)} {pool_kind} agents for {year}.")
 
-    # scml_agents has a module-level `random.seed(0)` (scml2022 oneshot team_131,
-    # imported transitively by get_agents/load_qualifiers above) that silently
-    # fixes Python's global random/np.random state on import. Left alone, every
-    # fresh process (e.g. every sharded SLURM task) draws the identical "first"
-    # sample from anac2024_oneshot's config generator (same n_steps, same
-    # per-level population split) instead of a genuinely different world.
-    # Reseed from OS entropy here, after the pollution and before the
-    # tournament call consumes it, to restore real per-run randomness.
-    random.seed()
-    np.random.seed()
+    # Undo scml_agents' import-time RNG pollution; optionally pin the config
+    # draw per shard for paired set-vs-set runs (see the helper's docstring).
+    reseed_after_import_pollution(shard_seed)
 
     competitors = [MyAgent] + qualifiers
     if include_defaults:
@@ -352,6 +394,11 @@ def main() -> None:
                         "loads (e.g. candidate_models/flex); default: "
                         "myagent/models. Equivalent to the MODEL_DIR env var; "
                         "applied by the import-time pre-scan above")
+    p.add_argument("--shard-seed", default=os.environ.get("SHARD_SEED") or None,
+                   help="pair the config draw across runs: same value + same "
+                        "SLURM_ARRAY_TASK_ID = identical world configs, so two "
+                        "model sets can be compared shard-by-shard. Default: "
+                        "the SHARD_SEED env var; unset = unpaired (OS entropy)")
     args = p.parse_args()
     benchmark(
         year=args.year,
@@ -362,6 +409,7 @@ def main() -> None:
         save_scores=args.save_scores,
         max_assignments=args.max_assignments,
         n_competitors_per_world=args.n_competitors_per_world,
+        shard_seed=args.shard_seed,
     )
 
 

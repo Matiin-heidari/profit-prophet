@@ -23,6 +23,11 @@ SHARDS="${SHARDS:-5}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-$SHARDS}"
 SETS="${SETS:-flex accept}"
 STAMP="$(date +%m%d_%H%M)"
+# Paired config draw across the submitted sets: both arrays share one
+# SHARD_SEED (default: this invocation's timestamp), so shard i of every set
+# plays the identical world config and the per-shard MyAgent deltas compare
+# the MODELS, not the world luck. SHARD_SEED="" disables pairing.
+SHARD_SEED="${SHARD_SEED-$STAMP}"
 
 for set_name in $SETS; do
     model_dir="candidate_models/${set_name}"
@@ -33,8 +38,8 @@ for set_name in $SETS; do
     run_name="bench_${set_name}_${STAMP}"
     job_id=$(sbatch --parsable \
         --array="0-$((SHARDS - 1))%${MAX_CONCURRENT}" \
-        --export=ALL,MODEL_DIR="${model_dir}",RUN_NAME="${run_name}" \
+        --export=ALL,MODEL_DIR="${model_dir}",RUN_NAME="${run_name}",SHARD_SEED="${SHARD_SEED}" \
         slurm/benchmark_shard.sh)
-    echo "submitted ${set_name}: job ${job_id}  RUN_NAME=${run_name}  MODEL_DIR=${model_dir}"
+    echo "submitted ${set_name}: job ${job_id}  RUN_NAME=${run_name}  MODEL_DIR=${model_dir}  SHARD_SEED=${SHARD_SEED:-unpaired}"
     echo "  aggregate later:  python scripts/aggregate_benchmark.py log/benchmark_shards/${run_name} --run ${run_name}"
 done

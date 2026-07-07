@@ -34,6 +34,15 @@ N_STEPS="${N_STEPS:-50}"
 # up in every process of this task (myagent/common.py reads MODEL_DIR).
 MODEL_DIR="${MODEL_DIR:-}"
 export MODEL_DIR
+# Optional paired config draw: submit two arrays with the SAME SHARD_SEED (e.g.
+# two model sets) and shard i of both draws the IDENTICAL world config, so
+# per-shard score deltas are meaningful. Empty = unpaired (OS entropy, the
+# historical behavior). benchmark.py derives the per-shard seed from
+# (SHARD_SEED, SLURM_ARRAY_TASK_ID) via sha256. NOTE: pairing covers the config
+# draw only (topology, n_steps, k) — in-world randomness still differs, so read
+# results as variance-reduced paired deltas, not identical scores.
+SHARD_SEED="${SHARD_SEED:-}"
+export SHARD_SEED
 # One shared run name across all shards of this array (SLURM_ARRAY_JOB_ID is the
 # array's parent id, identical for every task) so scores + context-usage logs
 # collect into one place.
@@ -43,7 +52,7 @@ mkdir -p "$SCORES_DIR"
 export RUN_NAME
 export LOG_CONTEXT_USAGE=1
 
-echo "=== shard ${SLURM_ARRAY_TASK_ID}  RUN_NAME=${RUN_NAME}  YEAR=${YEAR}  N_STEPS=${N_STEPS}  MODEL_DIR=${MODEL_DIR:-myagent/models (default)} ==="
+echo "=== shard ${SLURM_ARRAY_TASK_ID}  RUN_NAME=${RUN_NAME}  YEAR=${YEAR}  N_STEPS=${N_STEPS}  MODEL_DIR=${MODEL_DIR:-myagent/models (default)}  SHARD_SEED=${SHARD_SEED:-unpaired} ==="
 hostname; date
 git rev-parse --short HEAD; git branch --show-current
 
