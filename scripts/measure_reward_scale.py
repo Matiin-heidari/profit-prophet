@@ -46,6 +46,8 @@ TERM_COLUMNS = [
     "price_bonus",
     "deal_bonus",
     "engagement_bonus",
+    "margin_bonus",
+    "pbrs_bonus",
     "final_reward",
 ]
 

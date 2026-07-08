@@ -53,23 +53,31 @@ CONTEXTS = [
 """Contexts used for training. Can be overridden with TRAIN_CONTEXTS."""
 
 
-def make_context(context_name: str) -> GeneralContext:
-    """Create a context from its name."""
+def make_context(context_name: str, non_competitors=None) -> GeneralContext:
+    """Create a context from its name.
+
+    ``non_competitors`` (a tuple of agent classes) overrides the pool the
+    context fills non-agent world slots from; None keeps the scml default
+    (Greedy, RandDist, EqualDist). Only training envs pass a pool (see
+    myagent/opponents.py) — eval and deployment always use the default so
+    curves stay comparable.
+    """
+    kwargs = {} if non_competitors is None else {"non_competitors": tuple(non_competitors)}
     match context_name:
         case "StrongSupplierContext":
-            return StrongSupplierContext()
+            return StrongSupplierContext(**kwargs)
         case "BalancedSupplierContext":
-            return BalancedSupplierContext()
+            return BalancedSupplierContext(**kwargs)
         case "WeakSupplierContext":
-            return WeakSupplierContext()
+            return WeakSupplierContext(**kwargs)
         case "StrongConsumerContext":
-            return StrongConsumerContext()
+            return StrongConsumerContext(**kwargs)
         case "BalancedConsumerContext":
-            return BalancedConsumerContext()
+            return BalancedConsumerContext(**kwargs)
         case "WeakConsumerContext":
-            return WeakConsumerContext()
+            return WeakConsumerContext(**kwargs)
         case _:
-            return GeneralContext()
+            return GeneralContext(**kwargs)
 
 
 def get_parallelization_params(n_models_parallel: int = 1) -> dict:

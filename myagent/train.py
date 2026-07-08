@@ -27,6 +27,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from .action import make_action_manager
+from .opponents import describe_pool, resolve_opponent_pool
 from .common import (
     LOG_ROOT,
     MODEL_PATH,
@@ -901,6 +902,20 @@ class MyRewardFunction(RewardFunction):
         self.engagement_weight = weights["engagement_weight"]
         self.margin_weight = weights["margin_weight"]
         self.potential_weight = weights["potential_weight"]
+        # Which potential Φ the PBRS term uses (only matters when
+        # potential_weight != 0): "coverage" (legacy — densifies the
+        # price-blind coverage signal; lost its multi-seed A/B) or
+        # "dayprofit" (realized profit of the current day — densifies the
+        # aligned profit signal). Kept an env var, not a weight, because the
+        # two Φs are alternatives, not composable terms.
+        self.potential_kind = (
+            os.environ.get("REWARD_POTENTIAL_KIND", "coverage").strip().lower()
+        )
+        if self.potential_kind not in ("coverage", "dayprofit"):
+            raise ValueError(
+                f"REWARD_POTENTIAL_KIND must be 'coverage' or 'dayprofit', "
+                f"got {self.potential_kind!r}"
+            )
 
         self.log_reward_components = (
             os.environ.get("LOG_REWARD_COMPONENTS", "1") != "0"
@@ -921,17 +936,71 @@ class MyRewardFunction(RewardFunction):
     def _potential(self, awi: OneShotAWI) -> float:
         """Potential Φ(s) for potential-based reward shaping (PBRS).
 
-        Φ = ``potential_weight`` × coverage, where coverage ∈ [0, 1] is the
-        fraction of the agent's *active need* already secured (1 = fully covered,
-        0 = nothing covered). Higher Φ = better positioned (less expected
-        shortfall/disposal). Used only as ``γ·Φ(s') − Φ(s)``, which — by Ng,
-        Harada & Russell (1999) — leaves the optimal policy unchanged while
-        densifying the sparse profit reward (Φ moves every step as needs are
-        covered). So this shaping can speed learning but provably cannot steer
-        the agent to a worse policy, unlike the ad-hoc need/margin terms.
+        Used only as ``γ·Φ(s') − Φ(s)``, which — by Ng, Harada & Russell
+        (1999) — leaves the optimal policy unchanged while densifying the
+        sparse profit reward. So this shaping can speed learning but provably
+        cannot steer the agent to a worse policy, unlike the ad-hoc
+        need/margin terms. The Φ body is selected by REWARD_POTENTIAL_KIND
+        (see __init__); both are pure functions of the current state.
         """
         if self.potential_weight == 0.0:
             return 0.0
+        if self.potential_kind == "dayprofit":
+            return self._potential_dayprofit(awi)
+        return self._potential_coverage(awi)
+
+    def _potential_dayprofit(self, awi: OneShotAWI) -> float:
+        """Φ = realized profit of the current day so far (normalized).
+
+        Reads the ABSOLUTE per-partner counters (``awi.sales``/``sales_cost``
+        for suppliers, ``supplies``/``supplies_cost`` for consumers — state,
+        not history; no ``_diff_deals`` diffing here, Φ must be a function of
+        s alone) and values them against the same break-even convention as
+        ``margin_bonus``: supplier profit = revenue − (catalog_in + prod_cost)
+        × qty; consumer profit = (catalog_out − prod_cost) × qty − spend.
+
+        Why this Φ where Φ=coverage failed: score_delta lands once at day end,
+        so PBRS with a day-profit potential hands out per-deal credit WITHIN
+        the day; the counters reset at the day boundary, so Φ drops back to ~0
+        exactly when score_delta pays out — that drop is the telescoping term,
+        not a bug. Coverage instead densified the misaligned price-blind
+        signal. Normalized by price × capacity so magnitudes are comparable
+        across worlds, and clipped as a guard against degenerate worlds
+        (clipping keeps Φ a state function, so policy invariance holds).
+        """
+        try:
+            is_consumer = "Consumer" in type(self.context).__name__
+            catalog_in, catalog_out = _catalog_prices(awi)
+            prod_cost = _safe_float(
+                getattr(getattr(awi, "profile", None), "cost", 0.0)
+            )
+            n_lines = max(1.0, _safe_float(getattr(awi, "n_lines", 1.0), default=1.0))
+            if is_consumer:
+                qty = getattr(awi, "supplies", {}) or {}
+                value = getattr(awi, "supplies_cost", {}) or {}
+                total_qty = float(sum(qty.values()))
+                total_spend = float(sum(value.values()))
+                profit = (catalog_out - prod_cost) * total_qty - total_spend
+                price_scale = max(catalog_in, 1e-6)
+            else:
+                qty = getattr(awi, "sales", {}) or {}
+                value = getattr(awi, "sales_cost", {}) or {}
+                total_qty = float(sum(qty.values()))
+                total_revenue = float(sum(value.values()))
+                profit = total_revenue - (catalog_in + prod_cost) * total_qty
+                price_scale = max(catalog_out, 1e-6)
+            normalized = profit / (price_scale * n_lines)
+            return self.potential_weight * float(np.clip(normalized, -2.0, 2.0))
+        except Exception:
+            return 0.0
+
+    def _potential_coverage(self, awi: OneShotAWI) -> float:
+        """Φ = coverage ∈ [0, 1]: fraction of the *active need* already
+        secured (1 = fully covered). Higher Φ = less expected
+        shortfall/disposal. ⚠️ Lost its multi-seed A/B vs pure-profit (it
+        densifies the price-blind coverage signal) — kept for reproducibility
+        of the historical arms; prefer ``dayprofit``.
+        """
         try:
             needed_sales = _safe_float(getattr(awi, "needed_sales", 0.0))
             needed_supplies = _safe_float(getattr(awi, "needed_supplies", 0.0))
@@ -1280,6 +1349,7 @@ class MyRewardFunction(RewardFunction):
                 "margin_weight",
                 "margin_bonus",
                 "potential_weight",
+                "potential_kind",
                 "pbrs_bonus",
                 "price_weight",
                 "price_bonus",
@@ -1371,6 +1441,7 @@ class MyRewardFunction(RewardFunction):
                 "margin_weight": self.margin_weight,
                 "margin_bonus": context_terms["margin_bonus"],
                 "potential_weight": self.potential_weight,
+                "potential_kind": self.potential_kind,
                 "pbrs_bonus": pbrs_bonus,
                 "price_weight": self.price_weight,
                 "price_bonus": context_terms["price_bonus"],
@@ -1480,7 +1551,10 @@ def make_env(context_name, log: bool | None = None) -> OneShotEnv:
             ignore_simulation_exceptions=True,
         )
 
-    context = make_context(context_name)
+    # OPPONENT_POOL=strong mixes top-2024 qualifiers into the non-competitor
+    # slots (myagent/opponents.py). TRAINING worlds only — evaluate_model and
+    # deployment keep the default pool so eval curves stay comparable.
+    context = make_context(context_name, non_competitors=resolve_opponent_pool())
     context.world_params.update(world_params)
 
     return OneShotEnv(
@@ -1728,6 +1802,16 @@ def main(ntrain: int = NTRAINING):
     )
     log_world = os.environ.get("LOG_WORLD", "0") != "0"
     print(f"log_world: {log_world} ({'debug/fail-fast' if log_world else 'robust'})")
+    print(
+        f"potential_kind: {os.environ.get('REWARD_POTENTIAL_KIND', 'coverage')} "
+        f"(only used when potential_weight != 0)"
+    )
+    # Resolving here (not just in the workers) fails fast on a bad
+    # OPPONENT_POOL before any training process is spawned.
+    print(
+        f"opponent_pool: {describe_pool(resolve_opponent_pool())} "
+        f"(OPPONENT_POOL={os.environ.get('OPPONENT_POOL', 'default')}; training worlds only)"
+    )
 
     print("=== Resolved reward weights (per context) ===")
     for context_name in CONTEXTS:
