@@ -4,7 +4,7 @@
 #SBATCH --error=slurm-%A_%a.err
 #SBATCH --time=10:00:00
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=96G
+#SBATCH --mem=240G
 #SBATCH --partition=kisski
 #SBATCH --array=0-2
 
@@ -16,8 +16,18 @@
 #
 # Wall-time math: with 64 CPUs and MAX_PARALLEL_MODELS=6 all 6 contexts train
 # in ONE batch (6 learners x 8 envs ~ 54 busy cores); ~110 it/s -> 1M steps
-# ~2.5h + eval pauses -> ~3h/task; 6h limit leaves margin. (On a 48-CPU
-# allocation drop MAX_PARALLEL_MODELS to 3 and double the time limit.) Long-run safety nets (train.py):
+# ~2.5h + eval pauses -> ~3h/task; the 10h limit leaves margin. (On a 48-CPU
+# allocation drop MAX_PARALLEL_MODELS to 3 and double the time limit.)
+#
+# MEMORY: 6-parallel = ~55 processes. The first 1M attempt (14723915)
+# requested 96G = ~1.7G/process and was serially OOM-killed (6-7 oom_kill
+# events/task; processes died silently from ~20 min in, the job then idled
+# to the wall). All stable 3-parallel runs had ~3.2G/process, so 6-parallel
+# needs >=176G; 240G adds margin. Nodes have 512G (~482G requestable after
+# BIOS/OS reserve per the cluster docs), and since --cpus-per-task=64 takes
+# every core on the node anyway, the larger request blocks no other job.
+# Don't lower it without lowering MAX_PARALLEL_MODELS.
+# Long-run safety nets (train.py):
 #   - step-tagged checkpoints every CHECKPOINT_FREQ steps (_ckpt<steps>.zip)
 #   - best-eval model saved to _best.zip (+_best_meta.json) at every record
 #   - RESUME=1: a resubmitted task continues from its newest checkpoint, so a

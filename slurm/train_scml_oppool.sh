@@ -4,7 +4,7 @@
 #SBATCH --error=slurm-%A_%a.err
 #SBATCH --time=06:00:00
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=96G
+#SBATCH --mem=240G
 #SBATCH --partition=kisski
 #SBATCH --array=0-2
 

@@ -8,6 +8,7 @@ import os
 import random
 import re
 from multiprocessing import Process, Queue
+from queue import Empty as QueueEmpty
 from typing import Any
 
 import numpy as np
@@ -1754,8 +1755,14 @@ def train_one(context_name, ntrain, params, queue):
         model.save(model_path)
 
     finally:
+        # env.close() can itself raise (e.g. BrokenPipe when a worker was
+        # OOM-killed — seen in the 14723915 1M run). The sentinel below MUST
+        # still reach the parent or it waits for this context forever.
         if env is not None:
-            env.close()
+            try:
+                env.close()
+            except Exception as e:
+                print(f"[env close failed] {context_name}: {e}")
 
         queue.put((context_name, None))
 
@@ -1845,17 +1852,37 @@ def main(ntrain: int = NTRAINING):
         for process in processes:
             process.start()
 
-        finished = 0
+        # Wait for one sentinel per child — but never trust that every child
+        # CAN send one: a process SIGKILLed by the cgroup OOM killer (1M run
+        # 14723915: 6-7 oom_kills per task) dies without running its finally,
+        # and a plain queue.get() then blocks until the wall-time limit,
+        # burning hours after all children are dead. Poll with a timeout and
+        # reap silently-dead children so the batch always terminates.
+        waiting = dict(zip(batch, processes))
 
-        while finished < len(batch):
-            context_name, steps = queue.get()
+        while waiting:
+            try:
+                context_name, steps = queue.get(timeout=60)
+            except QueueEmpty:
+                for name, process in list(waiting.items()):
+                    if not process.is_alive():
+                        process.join()
+                        if name in bars:
+                            bars[name].close()
+                        print(
+                            f"=== DIED without finishing: {name} "
+                            f"(exitcode {process.exitcode}; -9 = SIGKILL, "
+                            f"usually the OOM killer) ==="
+                        )
+                        del waiting[name]
+                continue
 
             if steps is None:
                 if context_name in bars:
                     bars[context_name].close()
                 else:
                     print(f"=== finished: {context_name} ===")
-                finished += 1
+                waiting.pop(context_name, None)
             elif context_name in bars:
                 bars[context_name].update(steps)
 
