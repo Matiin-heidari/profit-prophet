@@ -5,6 +5,7 @@ old_models
 # Tensorboard, context and reward logs (all under log/)
 log
 slurm_logs
+logBackups
 
 awi_dump.json
 figures
