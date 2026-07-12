@@ -6,6 +6,7 @@ import os
 import random
 from multiprocessing import Process, Queue
 from typing import Any
+from pathlib import Path
 
 import numpy as np
 from negmas.sao import SAOResponse, ResponseType
@@ -1509,20 +1510,67 @@ def train_one(context_name, ntrain, params, queue):
             net_arch=[128, 128]
         )
 
-        model = TrainingAlgorithm(
-            "MlpPolicy",
-            env,
-            verbose=0,
-            policy_kwargs=policy_kwargs,
-            seed=seed,
-            tensorboard_log=f"./{LOG_ROOT}/tensorboard_logs/{run_name}/{context_name}",
-        ) # type: ignore learning_rate must be passed by the algorithm itself
+        warm_start = os.environ.get("WARM_START", "0") != "0"
+        warm_start_strict = os.environ.get("WARM_START_STRICT", "1") != "0"
+        warm_start_reset_timesteps = (
+            os.environ.get("WARM_START_RESET_TIMESTEPS", "1") != "0"
+        )
+
+        warm_start_model_dir = Path(
+            os.environ.get("WARM_START_MODEL_DIR", str(MODEL_PATH.parent))
+        )
+        warm_start_path = warm_start_model_dir / f"{MODEL_PATH.name}{context_name}"
+        warm_start_zip_path = warm_start_path.with_suffix(".zip")
+        warm_start_loaded = False
+
+        if warm_start:
+            print("=== Warm start config ===")
+            print(f"context: {context_name}")
+            print(f"warm_start_model_dir: {warm_start_model_dir}")
+            print(f"warm_start_path: {warm_start_zip_path}")
+            print(f"warm_start_strict: {warm_start_strict}")
+            print(f"warm_start_reset_timesteps: {warm_start_reset_timesteps}")
+
+        if warm_start and warm_start_zip_path.exists():
+            print(f"Warm starting {context_name} from {warm_start_zip_path}")
+
+            model = TrainingAlgorithm.load(
+                warm_start_path,
+                env=env,
+                tensorboard_log=f"./{LOG_ROOT}/tensorboard_logs/{run_name}/{context_name}",
+            )
+            warm_start_loaded = True
+
+        else:
+            if warm_start:
+                message = (
+                    f"Warm start requested, but model not found for "
+                    f"{context_name}: {warm_start_zip_path}"
+                )
+
+                if warm_start_strict:
+                    raise FileNotFoundError(message)
+
+                print(message)
+                print("Falling back to training from scratch.")
+
+            model = TrainingAlgorithm(
+                "MlpPolicy",
+                env,
+                verbose=0,
+                policy_kwargs=policy_kwargs,
+                seed=seed,
+                tensorboard_log=f"./{LOG_ROOT}/tensorboard_logs/{run_name}/{context_name}",
+            )  # type: ignore learning_rate must be passed by the algorithm itself
 
         model.learn(
             total_timesteps=ntrain,
             progress_bar=False,
             callback=callbacks,
             tb_log_name=context_name,
+            reset_num_timesteps=not (
+                warm_start_loaded and not warm_start_reset_timesteps
+            ),
         )
 
         # Seeded runs save to a run-scoped filename so parallel A/B arms never
@@ -1573,7 +1621,16 @@ def main(ntrain: int = NTRAINING):
     print(f"rl_agent_code: {_rl_agent_code()}")
     log_world = os.environ.get("LOG_WORLD", "0") != "0"
     print(f"log_world: {log_world} ({'debug/fail-fast' if log_world else 'robust'})")
-
+    print(f"warm_start: {os.environ.get('WARM_START', '0')}")
+    print(
+        "warm_start_model_dir: "
+        f"{os.environ.get('WARM_START_MODEL_DIR', str(MODEL_PATH.parent))}"
+    )
+    print(f"warm_start_strict: {os.environ.get('WARM_START_STRICT', '1')}")
+    print(
+        "warm_start_reset_timesteps: "
+        f"{os.environ.get('WARM_START_RESET_TIMESTEPS', '1')}"
+    )
     print("=== Resolved reward weights (per context) ===")
     for context_name in CONTEXTS:
         weights = resolve_reward_weights(context_name)
@@ -1612,8 +1669,22 @@ def main(ntrain: int = NTRAINING):
             else:
                 bars[context_name].update(steps)
 
-        for process in processes:
+        failed_processes = []
+
+        for context_name, process in zip(batch, processes):
             process.join()
+
+            if process.exitcode != 0:
+                failed_processes.append((context_name, process.exitcode))
+
+        if failed_processes:
+            raise RuntimeError(
+                "Training subprocess failed: "
+                + ", ".join(
+                    f"{context_name} exitcode={exitcode}"
+                    for context_name, exitcode in failed_processes
+                )
+            )
 
 
 if __name__ == "__main__":
