@@ -187,22 +187,44 @@ def step_env(env: Any, action: Any) -> tuple[np.ndarray, bool]:
 
 
 def sanitize_action(action: Any, action_space: spaces.Space) -> Any:
-    """Cast expert action into the dtype/shape expected by the env."""
+    """Cast expert action into the dtype/shape expected by the env.
+
+    For MultiDiscrete spaces, SCML's helper policies can sometimes emit negative
+    components for one side of the market. The environment cannot consume these,
+    so we clip every component into the legal [0, n_i - 1] range. This gives us a
+    valid BC target instead of aborting the whole data collection.
+    """
     if isinstance(action_space, spaces.Discrete):
-        return int(np.asarray(action).reshape(-1)[0])
+        raw = int(np.asarray(action).reshape(-1)[0])
+        return int(np.clip(raw, 0, action_space.n - 1))
 
     if isinstance(action_space, spaces.MultiDiscrete):
-        return np.asarray(action, dtype=np.int64).reshape(action_space.shape)
+        raw_array = np.asarray(action, dtype=np.int64).reshape(action_space.shape)
+        low = np.zeros_like(action_space.nvec, dtype=np.int64).reshape(action_space.shape)
+        high = (np.asarray(action_space.nvec, dtype=np.int64) - 1).reshape(action_space.shape)
+        repaired = np.clip(raw_array, low, high).astype(np.int64)
+
+        if not np.array_equal(raw_array, repaired):
+            count = getattr(sanitize_action, "_repair_count", 0) + 1
+            setattr(sanitize_action, "_repair_count", count)
+
+            if count <= 5 or count % 10000 == 0:
+                print(
+                    "[action repair] clipped invalid MultiDiscrete expert action "
+                    f"#{count}: raw={raw_array.tolist()} repaired={repaired.tolist()}"
+                )
+
+        return repaired
 
     if isinstance(action_space, spaces.MultiBinary):
-        return np.asarray(action, dtype=np.int64).reshape(action_space.shape)
+        raw_array = np.asarray(action, dtype=np.int64).reshape(action_space.shape)
+        return np.clip(raw_array, 0, 1).astype(np.int64)
 
     if isinstance(action_space, spaces.Box):
         action_array = np.asarray(action, dtype=np.float32)
         return np.clip(action_array, action_space.low, action_space.high)
 
     return action
-
 
 def expert_action(
     expert: str,
