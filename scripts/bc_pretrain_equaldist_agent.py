@@ -544,6 +544,21 @@ def _imitation_metrics(
     return metrics
 
 
+def _behavior_selection_score(metrics: dict[str, float]) -> float:
+    """Score for selecting the best BC checkpoint.
+
+    Higher is better. This prioritizes behavioral similarity over pure NLL.
+    """
+    return (
+        2.0 * metrics.get("component_accuracy", 0.0)
+        + 2.0 * metrics.get("binary_component_accuracy", 0.0)
+        + 1.0 * metrics.get("value_component_accuracy", 0.0)
+        + 1.0 * metrics.get("exact_accuracy", 0.0)
+        - 0.5 * metrics.get("mean_abs_action_error", 0.0)
+        - 0.5 * metrics.get("mean_component_distribution_l1", 0.0)
+    )
+
+
 def behavior_clone(
     model,
     train_obs: np.ndarray,
@@ -570,7 +585,7 @@ def behavior_clone(
         group["lr"] = learning_rate
 
     best_state_dict = copy.deepcopy(model.policy.state_dict())
-    best_val_loss = float("inf")
+    best_selection_score = -float("inf")
     best_metrics: dict[str, float] = {}
     epochs_without_improvement = 0
 
@@ -635,12 +650,16 @@ def behavior_clone(
             **val_metrics,
         }
 
-        improved = val_loss < best_val_loss
+        selection_score = _behavior_selection_score(current_metrics)
+        improved = selection_score > best_selection_score
 
         if improved:
-            best_val_loss = val_loss
+            best_selection_score = selection_score
             best_state_dict = copy.deepcopy(model.policy.state_dict())
-            best_metrics = current_metrics
+            best_metrics = {
+                **current_metrics,
+                "selection_score": float(selection_score),
+            }
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
@@ -655,8 +674,13 @@ def behavior_clone(
             f"val_loss={val_loss:.6f} "
             f"val_component_acc={val_metrics['component_accuracy']:.4f} "
             f"val_exact_acc={val_metrics['exact_accuracy']:.4f} "
-            f"entropy={mean_entropy:.6f} "
-            f"best_val_loss={best_val_loss:.6f}"
+            f"val_binary_acc={val_metrics.get('binary_component_accuracy', float('nan')):.4f} "
+            f"val_value_acc={val_metrics.get('value_component_accuracy', float('nan')):.4f} "
+            f"val_mae={val_metrics.get('mean_abs_action_error', float('nan')):.4f} "
+            f"val_dist_l1={val_metrics.get('mean_component_distribution_l1', float('nan')):.4f} "
+            f"selection_score={selection_score:.6f} "
+            f"best_selection_score={best_selection_score:.6f} "
+            f"entropy={mean_entropy:.6f}"
         )
 
         if (
@@ -671,7 +695,10 @@ def behavior_clone(
             break
 
         if patience > 0 and epochs_without_improvement >= patience:
-            print(f"Early stopping after {patience} epochs without validation improvement.")
+            print(
+                f"Early stopping after {patience} epochs without "
+                "behavior-selection improvement."
+            )
             break
 
     model.policy.load_state_dict(best_state_dict)
