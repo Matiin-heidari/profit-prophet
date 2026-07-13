@@ -264,6 +264,10 @@ def make_recording_equaldist_agent_class(
             return responses
 
     RecordingEqualDistOneShotAgent.__name__ = "RecordingEqualDistOneShotAgent"
+    RecordingEqualDistOneShotAgent.__qualname__ = "RecordingEqualDistOneShotAgent"
+    RecordingEqualDistOneShotAgent.__module__ = __name__
+
+    globals()["RecordingEqualDistOneShotAgent"] = RecordingEqualDistOneShotAgent
 
     return RecordingEqualDistOneShotAgent, action_space
 
@@ -288,6 +292,7 @@ def collect_dataset(
     )
 
     world_seed = seed
+    consecutive_world_failures = 0
 
     while len(observations) < n_samples and stats.worlds_run < max_worlds:
         set_global_seed(world_seed)
@@ -300,12 +305,21 @@ def collect_dataset(
                 params=(dict(),),
             )
             _run_world(world)
+            consecutive_world_failures = 0
 
         except Exception as exc:
             print(
                 f"[world failed] context={context_name} "
                 f"world={stats.worlds_run} seed={world_seed} error={exc}"
             )
+
+            consecutive_world_failures += 1
+
+            if consecutive_world_failures >= 5 and len(observations) == 0:
+                raise RuntimeError(
+                    f"World generation failed {consecutive_world_failures} times "
+                    f"in a row before collecting any sample. Last error: {exc}"
+                ) from exc
 
         stats.worlds_run += 1
         world_seed += 1
