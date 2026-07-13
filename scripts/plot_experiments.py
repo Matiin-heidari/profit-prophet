@@ -7,11 +7,17 @@ experiments) and plots **one figure per --variable**. Every --experiment and
 every --context you pass is overlaid on that same figure -- pass several of
 either (or both) to combine/compare them on one graph.
 
-Color is keyed by the (experiment, context) group: every seed in that group
-is drawn in the exact same color and gets one shared legend entry (not one
-per seed line). A given group always lands on the same color no matter which
-other experiments/contexts/variables it's plotted alongside, including
-across separate invocations of this script.
+Each experiment has its own base color, drawn from a curated, pairwise
+checked palette (not just evenly-spaced hues, which can put sort-adjacent
+experiments too close together -- see _CURATED_PALETTE_HEX); each context is
+a fixed, small offset within that family (see build_color_registry /
+color_for). So: an experiment's lines always look like the same family
+across plots showing different contexts; a given context always sits at the
+same relative spot within any experiment's family; and every
+(experiment, context) pair still gets a color that's fixed, consistent
+across every plot and every invocation of this script, and distinct from
+every other pair's. All seeds in a group share that exact color and one
+legend entry.
 
 Shortcuts
 ---------
@@ -152,19 +158,100 @@ def resolve_experiment(token: str, leaves: list) -> list:
     return [l for l in leaves if tok_low in l.lower()]
 
 
-def color_for(experiment: str, context: str) -> tuple:
-    """Deterministic color for an (experiment, context) group.
+_CONTEXT_HUE_BAND = 0.03    # total hue spread (turns) across a family's 6 contexts
+_CONTEXT_VALUE_STEP = 0.05  # brightness step per context, from the family's base value
+
+# Evenly-spacing hues by sorted-index order (the previous scheme) puts
+# alphabetically-adjacent experiments on hue-adjacent colors -- fine most of
+# the time, but occasionally two neighbors (e.g. a purple next to a magenta)
+# read as near-identical. Sidestep that by assigning experiments from a
+# curated, hand-picked palette instead of a formula: every entry here was
+# checked pairwise in RGB space (min pairwise distance ~95/441, min
+# *consecutive*-entry distance ~130/441 -- consecutive matters most, since
+# that's what sort-adjacent experiments actually get) rather than merely
+# "looks fine" by eye. Assigned in this fixed order by sorted experiment
+# index, so it's a pure function of the experiment list -- no cache file,
+# identical across invocations. If more experiments exist than colors here,
+# the overflow falls back to an evenly-spaced hue (rare in practice; extend
+# the palette if that starts happening).
+_CURATED_PALETTE_HEX = [
+    "#e6194b",  # red
+    "#4363d8",  # blue
+    "#8fce00",  # lime
+    "#f032e6",  # magenta
+    "#008080",  # teal
+    "#f58231",  # orange
+    "#000075",  # navy
+    "#3cb44b",  # green
+    "#9a6324",  # brown
+    "#17becf",  # cyan
+    "#911eb4",  # purple
+    "#800000",  # maroon
+]
+
+
+def _hex_to_hsv(hexcode: str) -> tuple:
+    r, g, b = (int(hexcode[i : i + 2], 16) / 255 for i in (1, 3, 5))
+    return colorsys.rgb_to_hsv(r, g, b)
+
+
+_CURATED_PALETTE_HSV = [_hex_to_hsv(h) for h in _CURATED_PALETTE_HEX]
+
+
+def build_color_registry(leaves: list) -> dict:
+    """Assign every experiment its own base color from the curated palette
+    (falling back to an evenly-spaced hue past the palette's length).
+
+    Context is layered on top of an experiment's base color as a small,
+    fixed hue+brightness offset (see color_for) rather than getting an
+    unrelated color of its own. That gives three properties at once:
+      - an experiment's colors always form one recognizable "family",
+        whichever contexts happen to be plotted alongside it, so the same
+        experiment reads as the same family across plots with different
+        context selections;
+      - within that family, a given context always sits at the same
+        relative position (e.g. StrongSupplierContext is always the family's
+        lowest-hue member), so context is *also* consistent across plots;
+      - every (experiment, context) pair is still guaranteed distinct: base
+        colors are pairwise well-separated (see _CURATED_PALETTE_HEX), and
+        the 6 contexts within one family each get a distinct small offset.
+    This is a pure function of the sorted experiment list, so it needs no
+    cache file and reproduces identically across separate invocations.
+    """
+    leaves = sorted(leaves)
+    n = len(leaves)
+    registry = {}
+    for i, leaf in enumerate(leaves):
+        if i < len(_CURATED_PALETTE_HSV):
+            registry[leaf] = _CURATED_PALETTE_HSV[i]
+        else:
+            registry[leaf] = (i / n if n else 0.0, 0.65, 0.80)
+    return registry
+
+
+def color_for(registry: dict, experiment: str, context: str) -> tuple:
+    """Look up an (experiment, context) line's color: the experiment's base
+    color (from `registry`), nudged by a small fixed hue+brightness offset
+    for `context`'s position among ALL_CONTEXTS, so the 6 contexts stay
+    visually distinct within one family without leaving it.
 
     Every seed in the same experiment+context is drawn in this exact color --
-    they're the same run family, just different seeds, so there's one color
-    (and one legend entry) per group rather than per line. Hue is hashed from
-    the (experiment, context) key, so a given group always lands on the same
-    color across separate plots/invocations of this script.
+    they're the same run family, just different seeds -- so there's one
+    color (and one legend entry) per group rather than per line.
     """
-    key = f"{experiment}\x1f{context}"
-    digest = hashlib.md5(key.encode()).digest()
-    hue = int.from_bytes(digest[:4], "big") / 2**32
-    return colorsys.hsv_to_rgb(hue, 0.62, 0.80)
+    base = registry.get(experiment)
+    if base is None:
+        # Shouldn't happen (registry is built from the same experiment list
+        # used everywhere else), but don't crash a plot over it.
+        key = f"{experiment}\x1f{context}"
+        digest = hashlib.md5(key.encode()).digest()
+        base = (int.from_bytes(digest[:4], "big") / 2**32, 0.65, 0.80)
+    base_hue, sat, base_value = base
+    idx = ALL_CONTEXTS.index(context) if context in ALL_CONTEXTS else 2.5
+    centered = idx - (len(ALL_CONTEXTS) - 1) / 2  # e.g. -2.5 .. +2.5 over 6 contexts
+    hue = (base_hue + centered * _CONTEXT_HUE_BAND / len(ALL_CONTEXTS)) % 1.0
+    value = min(0.97, max(0.25, base_value + centered * _CONTEXT_VALUE_STEP))
+    return colorsys.hsv_to_rgb(hue, sat, value)
 
 
 def load_context_csv(csv_root: str, experiment: str, context: str) -> pd.DataFrame | None:
@@ -208,12 +295,13 @@ def _short_list(items, limit=3) -> str:
     return ", ".join(items) if len(items) <= limit else f"{len(items)} selected"
 
 
-def plot_one(csv_root, out_dir, experiments, contexts, variable, seeds_filter, dpi):
+def plot_one(csv_root, out_dir, registry, experiments, contexts, variable, seeds_filter, dpi):
     """One combined plot: every (experiment, context, seed) line requested is
-    overlaid on the same axes. Color is keyed by the (experiment, context)
-    group -- all its seeds share the exact same color -- and the legend gets
-    exactly one entry per group (not per seed line), labeling the group's
-    first line and suppressing the rest via matplotlib's "_nolegend_" prefix.
+    overlaid on the same axes. Color comes from `registry` (see
+    build_color_registry) keyed by the (experiment, context) group -- all its
+    seeds share the exact same color -- and the legend gets exactly one entry
+    per group (not per seed line), labeling the group's first line and
+    suppressing the rest via matplotlib's "_nolegend_" prefix.
     """
     fig, ax = plt.subplots(figsize=(9, 5.5))
     any_line = False
@@ -232,7 +320,7 @@ def plot_one(csv_root, out_dir, experiments, contexts, variable, seeds_filter, d
                     file=sys.stderr,
                 )
                 continue
-            color = color_for(experiment, context)
+            color = color_for(registry, experiment, context)
             parts = []
             if multi_exp:
                 parts.append(experiment)
@@ -375,12 +463,13 @@ def main():
                 contexts.append(m)
 
     seeds_filter = set(args.seeds) if args.seeds else None
+    registry = build_color_registry(leaves)
 
     written = []
     for variable in args.variables:
         print(f"[plot] {variable}  <- experiments: {', '.join(experiments)}; contexts: {', '.join(contexts)}")
         out = plot_one(
-            args.csv_root, args.out_dir, experiments, contexts, variable,
+            args.csv_root, args.out_dir, registry, experiments, contexts, variable,
             seeds_filter, args.dpi,
         )
         if out:
