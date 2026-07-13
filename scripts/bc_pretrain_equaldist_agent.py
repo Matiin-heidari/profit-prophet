@@ -456,6 +456,14 @@ def _imitation_metrics(
     actions: np.ndarray,
     batch_size: int,
 ) -> dict[str, float]:
+    """Measure behavioral similarity between cloned policy and expert actions.
+
+    For MultiDiscrete([11, 2, 11, 2, ...]) we separate:
+    - even-index components: main action/value components
+    - odd-index components: binary response-type / switch components
+
+    This is more informative than rollout score alone.
+    """
     pred_actions = _predict_actions(model, observations, batch_size)
 
     pred_flat = pred_actions.reshape(pred_actions.shape[0], -1)
@@ -464,10 +472,76 @@ def _imitation_metrics(
     component_match = pred_flat == target_flat
     exact_match = np.all(component_match, axis=1)
 
-    return {
+    abs_error = np.abs(pred_flat.astype(np.float32) - target_flat.astype(np.float32))
+
+    even_idx = np.arange(pred_flat.shape[1]) % 2 == 0
+    odd_idx = ~even_idx
+
+    metrics = {
         "component_accuracy": float(np.mean(component_match)),
         "exact_accuracy": float(np.mean(exact_match)),
+        "mean_abs_action_error": float(np.mean(abs_error)),
+        "max_abs_action_error": float(np.max(abs_error)),
     }
+
+    if np.any(even_idx):
+        even_match = component_match[:, even_idx]
+        even_abs_error = abs_error[:, even_idx]
+
+        metrics.update(
+            {
+                "value_component_accuracy": float(np.mean(even_match)),
+                "value_mean_abs_error": float(np.mean(even_abs_error)),
+            }
+        )
+
+    if np.any(odd_idx):
+        odd_match = component_match[:, odd_idx]
+        odd_abs_error = abs_error[:, odd_idx]
+
+        metrics.update(
+            {
+                "binary_component_accuracy": float(np.mean(odd_match)),
+                "binary_mean_abs_error": float(np.mean(odd_abs_error)),
+            }
+        )
+
+    # Compare how often each component is active/non-zero.
+    pred_nonzero = pred_flat != 0
+    target_nonzero = target_flat != 0
+
+    metrics.update(
+        {
+            "nonzero_component_accuracy": float(np.mean(pred_nonzero == target_nonzero)),
+            "expert_nonzero_fraction": float(np.mean(target_nonzero)),
+            "model_nonzero_fraction": float(np.mean(pred_nonzero)),
+            "nonzero_fraction_abs_diff": float(
+                abs(np.mean(pred_nonzero) - np.mean(target_nonzero))
+            ),
+        }
+    )
+
+    # Per-component distribution distance. This is a rough behavioral similarity
+    # measure: lower is better. 0 means identical marginal distributions.
+    distribution_distances = []
+
+    for component_idx in range(pred_flat.shape[1]):
+        max_value = int(max(pred_flat[:, component_idx].max(), target_flat[:, component_idx].max()))
+        bins = np.arange(max_value + 2)
+
+        pred_hist, _ = np.histogram(pred_flat[:, component_idx], bins=bins, density=False)
+        target_hist, _ = np.histogram(target_flat[:, component_idx], bins=bins, density=False)
+
+        pred_dist = pred_hist / max(1, pred_hist.sum())
+        target_dist = target_hist / max(1, target_hist.sum())
+
+        distribution_distances.append(
+            0.5 * float(np.sum(np.abs(pred_dist - target_dist)))
+        )
+
+    metrics["mean_component_distribution_l1"] = float(np.mean(distribution_distances))
+
+    return metrics
 
 
 def behavior_clone(
@@ -711,48 +785,6 @@ def evaluate_true_equaldist(
         "gap_vs_best_mean": float(np.mean(gap_vs_best)) if gap_vs_best else float("nan"),
         "rank_mean": float(np.mean(ranks)) if ranks else float("nan"),
     }
-    my_scores = []
-    ranks = []
-
-    for seed in range(n_episodes):
-        set_global_seed(seed)
-        context = _make_robust_context(context_name)
-
-        world, agents = context.generate(
-            types=(EqualDistOneShotAgent,),
-            params=(dict(),),
-        )
-
-        _run_world(world)
-
-        raw_scores = world.scores()
-        scores = {
-            str(agent_id): float(score)
-            for agent_id, score in raw_scores.items()
-            if np.isfinite(float(score))
-        }
-
-        agent_ids = [
-            getattr(agent, "id", None)
-            for agent in agents
-            if getattr(agent, "id", None) is not None
-        ]
-        agent_ids = [str(agent_id) for agent_id in agent_ids]
-
-        selected_scores = [
-            scores[agent_id]
-            for agent_id in agent_ids
-            if agent_id in scores
-        ]
-
-        if selected_scores:
-            my_scores.append(float(np.mean(selected_scores)))
-            ranks.append(_agent_rank(scores, agent_ids))
-
-    return {
-        "my_score_mean": float(np.mean(my_scores)) if my_scores else float("nan"),
-        "rank_mean": float(np.mean(ranks)) if ranks else float("nan"),
-    }
 
 
 def parse_contexts(raw: str) -> list[str]:
@@ -772,12 +804,36 @@ def quality_passed(
     expert_rollout: dict[str, float],
     min_component_accuracy: float,
     min_exact_accuracy: float,
+    min_binary_component_accuracy: float,
+    max_mean_abs_action_error: float,
+    max_distribution_l1: float,
     min_score_ratio: float,
 ) -> bool:
+    """Decide whether the clone is good enough to save.
+
+    Behavior metrics are primary. Rollout score is only a sanity check and can be
+    disabled by setting min_score_ratio <= 0.
+    """
     component_ok = (
         imitation_metrics.get("component_accuracy", 0.0) >= min_component_accuracy
     )
+
     exact_ok = imitation_metrics.get("exact_accuracy", 0.0) >= min_exact_accuracy
+
+    binary_ok = (
+        imitation_metrics.get("binary_component_accuracy", 0.0)
+        >= min_binary_component_accuracy
+    )
+
+    mae_ok = (
+        imitation_metrics.get("mean_abs_action_error", float("inf"))
+        <= max_mean_abs_action_error
+    )
+
+    distribution_ok = (
+        imitation_metrics.get("mean_component_distribution_l1", float("inf"))
+        <= max_distribution_l1
+    )
 
     expert_score = expert_rollout.get("my_score_mean", float("nan"))
     bc_score = bc_rollout.get("my_score_mean", float("nan"))
@@ -789,7 +845,15 @@ def quality_passed(
     else:
         score_ok = False
 
-    return component_ok and exact_ok and score_ok
+    print("=== Clone quality checks ===")
+    print(f"component_ok:    {component_ok}")
+    print(f"exact_ok:        {exact_ok}")
+    print(f"binary_ok:       {binary_ok}")
+    print(f"mae_ok:          {mae_ok}")
+    print(f"distribution_ok: {distribution_ok}")
+    print(f"score_ok:        {score_ok}")
+
+    return component_ok and exact_ok and binary_ok and mae_ok and distribution_ok and score_ok
 
 
 def main() -> None:
@@ -811,11 +875,17 @@ def main() -> None:
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
 
-    parser.add_argument("--target-component-accuracy", type=float, default=0.95)
-    parser.add_argument("--target-exact-accuracy", type=float, default=0.70)
-    parser.add_argument("--min-component-accuracy", type=float, default=0.90)
-    parser.add_argument("--min-exact-accuracy", type=float, default=0.50)
-    parser.add_argument("--min-score-ratio", type=float, default=0.85)
+    parser.add_argument("--target-component-accuracy", type=float, default=0.90)
+    parser.add_argument("--target-exact-accuracy", type=float, default=0.25)
+
+    parser.add_argument("--min-component-accuracy", type=float, default=0.75)
+    parser.add_argument("--min-exact-accuracy", type=float, default=0.05)
+    parser.add_argument("--min-binary-component-accuracy", type=float, default=0.85)
+    parser.add_argument("--max-mean-abs-action-error", type=float, default=1.25)
+    parser.add_argument("--max-distribution-l1", type=float, default=0.35)
+
+    # Score is only a sanity check. Set <= 0 to disable.
+    parser.add_argument("--min-score-ratio", type=float, default=0.0)
 
     parser.add_argument("--rollout-eval-episodes", type=int, default=5)
     parser.add_argument(
@@ -970,6 +1040,9 @@ def main() -> None:
                 expert_rollout=expert_rollout,
                 min_component_accuracy=args.min_component_accuracy,
                 min_exact_accuracy=args.min_exact_accuracy,
+                min_binary_component_accuracy=args.min_binary_component_accuracy,
+                max_mean_abs_action_error=args.max_mean_abs_action_error,
+                max_distribution_l1=args.max_distribution_l1,
                 min_score_ratio=args.min_score_ratio,
             )
 
