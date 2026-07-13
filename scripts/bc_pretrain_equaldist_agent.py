@@ -638,6 +638,79 @@ def evaluate_true_equaldist(
     context_name: str,
     n_episodes: int,
 ) -> dict[str, float]:
+    """Evaluate a real EqualDistOneShotAgent subclass in the same context.
+
+    We use a subclass instead of EqualDistOneShotAgent directly because the SCML
+    context can already contain EqualDist agents as opponents. Passing the base
+    class directly can make context.generate() match several existing Eq agents.
+    """
+    class EvaluationEqualDistOneShotAgent(EqualDistOneShotAgent):
+        pass
+
+    EvaluationEqualDistOneShotAgent.__name__ = "EvaluationEqualDistOneShotAgent"
+    EvaluationEqualDistOneShotAgent.__qualname__ = "EvaluationEqualDistOneShotAgent"
+    EvaluationEqualDistOneShotAgent.__module__ = __name__
+    globals()["EvaluationEqualDistOneShotAgent"] = EvaluationEqualDistOneShotAgent
+
+    my_scores = []
+    score_gaps = []
+    gap_vs_best = []
+    ranks = []
+
+    for seed in range(n_episodes):
+        set_global_seed(seed)
+        context = _make_robust_context(context_name)
+
+        world, agents = context.generate(
+            types=(EvaluationEqualDistOneShotAgent,),
+            params=(dict(),),
+        )
+
+        _run_world(world)
+
+        raw_scores = world.scores()
+        scores = {
+            str(agent_id): float(score)
+            for agent_id, score in raw_scores.items()
+            if np.isfinite(float(score))
+        }
+
+        agent_ids = [
+            getattr(agent, "id", None)
+            for agent in agents
+            if getattr(agent, "id", None) is not None
+        ]
+        agent_ids = [str(agent_id) for agent_id in agent_ids]
+
+        selected_scores = [
+            scores[agent_id]
+            for agent_id in agent_ids
+            if agent_id in scores
+        ]
+
+        opponent_scores = [
+            score
+            for agent_id, score in scores.items()
+            if agent_id not in agent_ids
+        ]
+
+        if selected_scores:
+            my_score = float(np.mean(selected_scores))
+            my_scores.append(my_score)
+            ranks.append(_agent_rank(scores, agent_ids))
+
+            if opponent_scores:
+                opponent_mean = float(np.mean(opponent_scores))
+                best_opponent = float(np.max(opponent_scores))
+                score_gaps.append(my_score - opponent_mean)
+                gap_vs_best.append(my_score - best_opponent)
+
+    return {
+        "my_score_mean": float(np.mean(my_scores)) if my_scores else float("nan"),
+        "score_gap_mean": float(np.mean(score_gaps)) if score_gaps else float("nan"),
+        "gap_vs_best_mean": float(np.mean(gap_vs_best)) if gap_vs_best else float("nan"),
+        "rank_mean": float(np.mean(ranks)) if ranks else float("nan"),
+    }
     my_scores = []
     ranks = []
 
