@@ -43,6 +43,12 @@ export MODEL_DIR
 # results as variance-reduced paired deltas, not identical scores.
 SHARD_SEED="${SHARD_SEED:-}"
 export SHARD_SEED
+# negmas' tournament working dir (full per-world logs) — kept OFF the small
+# home quota (~/negmas/tournaments overflowed 2026-07-13, killing shards with
+# "Disk quota exceeded") and deleted by benchmark.py after the scores CSV is
+# saved. Repo-relative -> lands on the project filesystem.
+TOURNAMENT_DIR="${TOURNAMENT_DIR:-log/negmas_tournaments}"
+export TOURNAMENT_DIR
 # One shared run name across all shards of this array (SLURM_ARRAY_JOB_ID is the
 # array's parent id, identical for every task) so scores + context-usage logs
 # collect into one place.

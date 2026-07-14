@@ -24,6 +24,7 @@ import glob
 import hashlib
 import os
 import random
+import shutil
 import sys
 import time
 from math import comb
@@ -45,12 +46,28 @@ if _pre_args.model_dir:
 
 import numpy as np
 import pandas as pd
+import negmas.tournaments.tournaments as _negmas_tournaments
 from negmas.helpers import humanize_time
 from scml.utils import anac2024_oneshot, DefaultAgentsOneShot2024
 from scml_agents import get_agents
 
 from myagent.common import LOG_ROOT, MODEL_PATH
 from myagent.myagent import MyAgent
+
+# reduces tournament logs
+_real_save_stats = _negmas_tournaments.save_stats
+
+
+def _save_stats_without_negotiations(*args, **kwargs):
+    world = kwargs.get("world", args[0] if args else None)
+    try:
+        world.save_negotiations = False # type: ignore
+    except Exception:
+        pass
+    return _real_save_stats(*args, **kwargs)
+
+
+_negmas_tournaments.save_stats = _save_stats_without_negotiations
 
 
 def _short(name: str) -> str:
@@ -290,6 +307,7 @@ def benchmark(
     max_assignments: int = 500,
     n_competitors_per_world: int | None = None,
     shard_seed: str | None = None,
+    tournament_dir: str | None = None,
 ) -> None:
     # Which model set MyAgent will load (MODEL_DIR env var / --model-dir).
     # Fail fast here — inside the tournament a missing model surfaces as
@@ -335,6 +353,18 @@ def benchmark(
         f"({'serial' if serial else 'parallel'})"
     )
 
+    # By default negmas writes the tournament's full working dir;
+    #  The dir is deleted after the scores are extracted
+    # — the per-world scores CSV (--save-scores) is the only artifact we keep.
+    tournament_path = None
+    if tournament_dir:
+        run = os.environ.get("RUN_NAME", "bench")
+        task = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
+        tournament_path = os.path.abspath(
+            os.path.join(tournament_dir, f"{run}_shard{task}")
+        )
+        print(f"Tournament working dir: {tournament_path} (deleted afterwards)")
+
     start = time.perf_counter()
     results = anac2024_oneshot(
         competitors=competitors,
@@ -342,6 +372,14 @@ def benchmark(
         n_steps=n_steps,
         n_configs=n_configs,
         n_competitors_per_world=n_competitors_per_world,
+        tournament_path=tournament_path,
+        # Keep world logging minimal: compact=True -> no_logs on every world;
+        # forced_logs_fraction=0.0 stops negmas force-enabling FULL logs
+        # (compact=False + save_negotiations=True) on every config.
+        # See the save_stats wrapper at the top of this file for the third piece.
+        # Scores are unaffected
+        compact=True,
+        forced_logs_fraction=0.0,
         debug=False,
         parallelism="serial" if serial else "parallel",
         # Don't reveal type/position in names — keeps the comparison honest.
@@ -367,6 +405,10 @@ def benchmark(
     # Which per-context model (or fallback) MyAgent actually used, from its
     # per-world usage logs. Surfaces routing problems the score alone can't.
     report_context_usage()
+
+    if tournament_path and os.path.isdir(tournament_path):
+        shutil.rmtree(tournament_path, ignore_errors=True)
+        print(f"Removed tournament working dir {tournament_path}")
 
     print(f"\nFinished in {humanize_time(elapsed)}")
 
@@ -399,6 +441,12 @@ def main() -> None:
                         "SLURM_ARRAY_TASK_ID = identical world configs, so two "
                         "model sets can be compared shard-by-shard. Default: "
                         "the SHARD_SEED env var; unset = unpaired (OS entropy)")
+    p.add_argument("--tournament-dir",
+                   default=os.environ.get("TOURNAMENT_DIR") or None,
+                   help="base dir for negmas' tournament working files "
+                        "(deleted after the scores are extracted). Default: "
+                        "the TOURNAMENT_DIR env var; unset = negmas default "
+                        "~/negmas/tournaments, which is NOT cleaned")
     args = p.parse_args()
     benchmark(
         year=args.year,
@@ -410,6 +458,7 @@ def main() -> None:
         max_assignments=args.max_assignments,
         n_competitors_per_world=args.n_competitors_per_world,
         shard_seed=args.shard_seed,
+        tournament_dir=args.tournament_dir,
     )
 
 
