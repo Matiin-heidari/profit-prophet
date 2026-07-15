@@ -1,0 +1,32 @@
+=== PPO from scratch BalancedSupplier ===
+RUN_NAME=ppo_fromscratch_bs_s1
+SEED=1
+TRAIN_CONTEXTS=BalancedSupplierContext
+WARM_START=0
+Detected 48 cores from SLURM_CPUS_PER_TASK → using 8 envs per model (1 model(s) training in parallel)
+=== Training config ===
+ntrain: 400000
+contexts: ['BalancedSupplierContext']
+run_name: ppo_fromscratch_bs_s1
+seed: 1
+diagnostics_freq: 10000
+rl_agent_code: On
+log_world: False (robust)
+warm_start: 0
+warm_start_model_dir: 
+/mnt/vast-kisski/projects/kisski-aai-ss26/repos/profit-prophet-warmstart/myagent
+/models
+warm_start_strict: 1
+warm_start_reset_timesteps: 1
+=== Resolved reward weights (per context) ===
+BalancedSupplierContext: {'score_delta_weight': 3.0, 'need_weight': 0.05, 
+'time_pressure_weight': 1.0, 'margin_weight': 0.3}
+Training as BalancedSupplierContext
+============ Job Information ===================================================
+Submitted: 2026-07-14T17:46:23
+Started: 2026-07-14T18:47:43
+Ended: 2026-07-14T19:35:48
+Elapsed: 49 min, Limit: 180 min, Difference: 131 min
+CPUs: 48, Nodes: 1
+Estimated credit Consumption:  core-hours
+================================================================================
