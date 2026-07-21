@@ -59,7 +59,7 @@ def run(
     n_steps=20,
     n_configs=2,
     debug=True,
-    serial=False,
+    serial=True,
     year=None,
     n_competitors_per_world=None,
 ):
@@ -75,7 +75,8 @@ def run(
                      different number of factories, profiles, production graphs etc
         reveal_types: If given, agent names will reveal their type (kind of) and position
         debug: If given, a debug run is used.
-        serial: If given, a serial run will be used.
+        serial: Run serially (default True — the in-process parallel tournament
+                deadlocks around world ~160). Set False only if you know you need it.
         year:  If given (e.g. 2024/2025/2026), run against that year's competition
                pool (qualified agents) instead of the default winners set. The
                2025/2026 pools require the scml-agents repo installed (see

@@ -302,7 +302,7 @@ def benchmark(
     n_configs: int = 10,
     n_steps: int = 50,
     include_defaults: bool = False,
-    serial: bool = False,
+    serial: bool = True,
     save_scores: str | None = None,
     max_assignments: int = 500,
     n_competitors_per_world: int | None = None,
@@ -421,7 +421,10 @@ def main() -> None:
     p.add_argument("--n-steps", type=int, default=50)
     p.add_argument("--include-defaults", action="store_true",
                    help="also include the weak DefaultAgentsOneShot2024 pool")
-    p.add_argument("--serial", action="store_true")
+    p.add_argument("--serial", action=argparse.BooleanOptionalAction, default=True,
+                   help="run the tournament serially (default). The in-process "
+                        "parallel tournament deadlocks (~world 160), so pass "
+                        "--no-serial only if you know you need it.")
     p.add_argument("--save-scores", default=None,
                    help="write per-agent-per-world scores to this CSV (for "
                         "sharded runs; aggregate with scripts/aggregate_benchmark.py)")
