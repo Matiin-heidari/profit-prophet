@@ -1,4 +1,5 @@
 import os
+import random
 from pathlib import Path
 import time
 
@@ -7,6 +8,7 @@ import time
 # re-initialize CUDA in forked subprocess"
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
+import numpy as np
 from negmas.helpers import humanize_time
 from rich import print
 from scml.utils import (
@@ -21,6 +23,35 @@ import matplotlib.pyplot as plt
 
 from scml_agents import get_agents
 
+
+def load_pool(year, competition="oneshot"):
+    """Load a competition year's agent pool for ``competition`` ("oneshot"/"std").
+
+    Prefers the qualified-only set and falls back to the full pool if that
+    year's qualification metadata is unusable (mirrors scripts/benchmark.py).
+    Note the 2025/2026 pools only exist in the scml-agents *repo*, not the
+    released package — see the benchmark notes in the README on installing it
+    (--no-deps, to keep the tested scml 0.7.5 stack).
+    """
+    track = "oneshot" if competition == "oneshot" else "std"
+    for qualified in (True, False):
+        try:
+            agents = list(
+                get_agents(
+                    year,
+                    track=track,
+                    qualified_only=qualified,
+                    as_class=True,
+                    ignore_failing=True,
+                )
+            )
+        except Exception:
+            continue
+        if agents:
+            return agents
+    return []
+
+
 def run(
     competitors=tuple(),
     competition="oneshot",
@@ -29,6 +60,8 @@ def run(
     n_configs=2,
     debug=True,
     serial=False,
+    year=None,
+    n_competitors_per_world=None,
 ):
     """
     **Not needed for submission.** You can use this function to test your agent.
@@ -43,6 +76,14 @@ def run(
         reveal_types: If given, agent names will reveal their type (kind of) and position
         debug: If given, a debug run is used.
         serial: If given, a serial run will be used.
+        year:  If given (e.g. 2024/2025/2026), run against that year's competition
+               pool (qualified agents) instead of the default winners set. The
+               2025/2026 pools require the scml-agents repo installed (see
+               load_pool). If omitted, the legacy 2021-2023 winners are used.
+        n_competitors_per_world: If given, fix how many competitors share each
+               world. Leave unset for small pools; set it (e.g. 2) with a large
+               pool like --year 2026, otherwise the round-robin runs every
+               C(N, k) combination and the world count explodes.
 
     Returns:
         None
@@ -55,15 +96,32 @@ def run(
 
     """
 
-    winners = [
-        get_agents(y, track="oneshot", winners_only=True, as_class=False)[0]
-        for y in (2021, 2022, 2023)
-    ]
+    if year is not None:
+        opponents = load_pool(year, competition)
+        if not opponents:
+            raise SystemExit(
+                f"No {competition} agents found for year {year} — is an "
+                f"scml-agents install with that pool available?"
+            )
+        print(f"Running against the {year} {competition} pool ({len(opponents)} agents).")
+    else:
+        # Legacy default: the OneShot winners of the last three years.
+        opponents = [
+            get_agents(y, track="oneshot", winners_only=True, as_class=True)[0]
+            for y in (2021, 2022, 2023)
+        ]
+
+    # scml_agents runs a module-level random.seed(0) on import, which pins the
+    # global RNG that anac2024_*'s config generator draws from — leaving it,
+    # every config in this run would be near-identical. Reseed from OS entropy
+    # after the pool import and before the tournament (mirrors benchmark.py).
+    random.seed()
+    np.random.seed()
 
     if competition == "oneshot":
-        competitors = list(competitors) + list(DefaultAgentsOneShot2024) + winners
+        competitors = list(competitors) + list(DefaultAgentsOneShot2024) + opponents
     else:
-        competitors = list(competitors) + list(DefaultAgentsStd2024)
+        competitors = list(competitors) + list(DefaultAgentsStd2024) + opponents
 
     start = time.perf_counter()
     if competition == "std":
@@ -75,6 +133,7 @@ def run(
         verbose=True,
         n_steps=n_steps,
         n_configs=n_configs,
+        n_competitors_per_world=n_competitors_per_world,
         debug=debug,
         parallelism="serial" if serial else "parallel",
         agent_name_reveals_position=reveal_types,
