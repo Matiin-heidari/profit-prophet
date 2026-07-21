@@ -1370,7 +1370,7 @@ def dump_object(obj):
 
 def make_env(context_name, log: bool | None = None) -> OneShotEnv:
     # When `log` is not passed explicitly, fall back to the LOG_WORLD env var
-    # ("1" enables the verbose fail-fast debugging profile; default off).
+    # ("1" enables the verbose fail-fast diagnostic profile; default off).
     if log is None:
         log = os.environ.get("LOG_WORLD", "0") != "0"
 
@@ -1523,13 +1523,6 @@ def train_one(context_name, ntrain, params, queue):
         warm_start_zip_path = warm_start_path.with_suffix(".zip")
         warm_start_loaded = False
 
-        if warm_start:
-            print("=== Warm start config ===")
-            print(f"context: {context_name}")
-            print(f"warm_start_model_dir: {warm_start_model_dir}")
-            print(f"warm_start_path: {warm_start_zip_path}")
-            print(f"warm_start_strict: {warm_start_strict}")
-            print(f"warm_start_reset_timesteps: {warm_start_reset_timesteps}")
 
         if warm_start and warm_start_zip_path.exists():
             print(f"Warm starting {context_name} from {warm_start_zip_path}")
@@ -1552,7 +1545,7 @@ def train_one(context_name, ntrain, params, queue):
                     raise FileNotFoundError(message)
 
                 print(message)
-                print("Falling back to training from scratch.")
+                print("Training from scratch.")
 
             model = TrainingAlgorithm(
                 "MlpPolicy",
@@ -1621,16 +1614,13 @@ def main(ntrain: int = NTRAINING):
     print(f"rl_agent_code: {_rl_agent_code()}")
     log_world = os.environ.get("LOG_WORLD", "0") != "0"
     print(f"log_world: {log_world} ({'debug/fail-fast' if log_world else 'robust'})")
-    print(f"warm_start: {os.environ.get('WARM_START', '0')}")
-    print(
-        "warm_start_model_dir: "
-        f"{os.environ.get('WARM_START_MODEL_DIR', str(MODEL_PATH.parent))}"
-    )
-    print(f"warm_start_strict: {os.environ.get('WARM_START_STRICT', '1')}")
-    print(
-        "warm_start_reset_timesteps: "
-        f"{os.environ.get('WARM_START_RESET_TIMESTEPS', '1')}"
-    )
+    warm_start_enabled = os.environ.get("WARM_START", "0") != "0"
+    print(f"warm_start: {int(warm_start_enabled)}")
+    if warm_start_enabled:
+        print(
+            "warm_start_model_dir: "
+            f"{os.environ.get('WARM_START_MODEL_DIR', str(MODEL_PATH.parent))}"
+        )
     print("=== Resolved reward weights (per context) ===")
     for context_name in CONTEXTS:
         weights = resolve_reward_weights(context_name)

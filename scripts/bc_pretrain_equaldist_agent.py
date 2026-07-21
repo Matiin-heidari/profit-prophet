@@ -156,26 +156,6 @@ def _as_action_array(action: Any, action_space: spaces.Space) -> np.ndarray:
     return np.asarray(action)
 
 
-def _action_summary(actions: np.ndarray, action_space: spaces.Space) -> None:
-    print("=== Action target summary ===")
-    print(f"action shape: {actions.shape}")
-    print(f"action dtype:  {actions.dtype}")
-
-    if isinstance(action_space, spaces.MultiDiscrete):
-        nvec = np.asarray(action_space.nvec).reshape(-1)
-        flat = actions.reshape(actions.shape[0], -1)
-
-        for idx in range(flat.shape[1]):
-            values, counts = np.unique(flat[:, idx], return_counts=True)
-            top = sorted(
-                zip(values.tolist(), counts.tolist()),
-                key=lambda item: item[1],
-                reverse=True,
-            )[:10]
-            formatted = ", ".join(f"{v}:{c}" for v, c in top)
-            print(f"component {idx:02d} n={nvec[idx]} top: {formatted}")
-
-
 def _score_summary(values: list[float]) -> str:
     if not values:
         return "n=0"
@@ -457,16 +437,7 @@ def _imitation_metrics(
     actions: np.ndarray,
     batch_size: int,
 ) -> dict[str, float]:
-    """Measure behavioral similarity between cloned policy and expert actions.
-
-    We keep exact/component accuracy as diagnostics, but for EqualDist cloning
-    the more useful behavior metrics are:
-    - binary component accuracy
-    - value component mean absolute error
-    - overall mean absolute action error
-    - nonzero/action-activity similarity
-    - marginal action distribution similarity
-    """
+    """Compute validation metrics for cloned actions."""
     pred_actions = _predict_actions(model, observations, batch_size)
 
     pred_flat = pred_actions.reshape(pred_actions.shape[0], -1)
@@ -858,12 +829,7 @@ def quality_passed(
     max_nonzero_fraction_abs_diff: float,
     min_score_ratio: float,
 ) -> bool:
-    """Decide whether the clone is good enough to save.
-
-    This gate is intentionally behavior-based. Exact action equality is reported
-    but not required, because value components can be behaviorally close without
-    being exactly identical.
-    """
+    """Return whether the clone passes the configured behavior checks."""
     binary_ok = (
         imitation_metrics.get("binary_component_accuracy", 0.0)
         >= min_binary_component_accuracy
@@ -899,49 +865,36 @@ def quality_passed(
     else:
         score_ok = False
 
-    print("=== Clone quality checks ===")
-    print(f"binary_ok:       {binary_ok}")
-    print(f"value_mae_ok:    {value_mae_ok}")
-    print(f"mae_ok:          {mae_ok}")
-    print(f"distribution_ok: {distribution_ok}")
-    print(f"nonzero_ok:      {nonzero_ok}")
-    print(f"score_ok:        {score_ok}")
-
-    print("=== Clone quality diagnostics ===")
-    print(
-        "component_accuracy: "
-        f"{imitation_metrics.get('component_accuracy', float('nan')):.4f}"
-    )
-    print(
-        "exact_accuracy: "
-        f"{imitation_metrics.get('exact_accuracy', float('nan')):.4f}"
-    )
-    print(
-        "value_component_accuracy: "
-        f"{imitation_metrics.get('value_component_accuracy', float('nan')):.4f}"
-    )
-    print(
-        "value_mean_abs_error: "
-        f"{imitation_metrics.get('value_mean_abs_error', float('nan')):.4f}"
-    )
-    print(
-        "binary_component_accuracy: "
-        f"{imitation_metrics.get('binary_component_accuracy', float('nan')):.4f}"
-    )
-    print(
-        "mean_abs_action_error: "
-        f"{imitation_metrics.get('mean_abs_action_error', float('nan')):.4f}"
-    )
-    print(
-        "mean_component_distribution_l1: "
-        f"{imitation_metrics.get('mean_component_distribution_l1', float('nan')):.4f}"
-    )
-    print(
-        "nonzero_fraction_abs_diff: "
-        f"{imitation_metrics.get('nonzero_fraction_abs_diff', float('nan')):.4f}"
+    passed = (
+        binary_ok
+        and value_mae_ok
+        and mae_ok
+        and distribution_ok
+        and nonzero_ok
+        and score_ok
     )
 
-    return binary_ok and value_mae_ok and mae_ok and distribution_ok and nonzero_ok and score_ok
+    print(
+        "clone quality: "
+        f"binary_ok={binary_ok}, "
+        f"value_mae_ok={value_mae_ok}, "
+        f"mae_ok={mae_ok}, "
+        f"distribution_ok={distribution_ok}, "
+        f"nonzero_ok={nonzero_ok}, "
+        f"score_ok={score_ok}, "
+        f"passed={passed}"
+    )
+    print(
+        "clone metrics: "
+        f"binary={imitation_metrics.get('binary_component_accuracy', float('nan')):.3f}, "
+        f"value_mae={imitation_metrics.get('value_mean_abs_error', float('nan')):.3f}, "
+        f"mae={imitation_metrics.get('mean_abs_action_error', float('nan')):.3f}, "
+        f"dist_l1={imitation_metrics.get('mean_component_distribution_l1', float('nan')):.3f}, "
+        f"nonzero_diff={imitation_metrics.get('nonzero_fraction_abs_diff', float('nan')):.3f}"
+    )
+
+    return passed
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -971,7 +924,7 @@ def main() -> None:
     parser.add_argument("--max-distribution-l1", type=float, default=0.20)
     parser.add_argument("--max-nonzero-fraction-abs-diff", type=float, default=0.08)
 
-    # Score is only a sanity check. Set <= 0 to disable.
+    # Set <= 0 to disable the rollout score check.
     parser.add_argument("--min-score-ratio", type=float, default=0.0)
 
     parser.add_argument("--rollout-eval-episodes", type=int, default=5)
@@ -1007,14 +960,13 @@ def main() -> None:
 
     contexts = parse_contexts(args.contexts)
 
-    print("=== True EqualDist behavior cloning ===")
+    print("=== EqualDist behavior cloning ===")
     print(f"contexts: {contexts}")
-    print(f"n_samples per context: {args.n_samples}")
-    print(f"bc_epochs: {args.bc_epochs}")
-    print(f"batch_size: {args.batch_size}")
-    print(f"validation_fraction: {args.validation_fraction}")
+    print(
+        f"samples={args.n_samples}, epochs={args.bc_epochs}, "
+        f"batch_size={args.batch_size}"
+    )
     print(f"output_dir: {output_dir}")
-    print(f"run_name: {run_name}")
 
     for context_name in contexts:
         print(f"\n=== Context: {context_name} ===")
@@ -1026,11 +978,13 @@ def main() -> None:
             max_worlds=args.max_worlds,
         )
 
-        print("=== Dataset collection stats ===")
-        print(dataset_stats)
-        print(f"observations: {observations.shape}")
-        print(f"actions:      {actions.shape}")
-        _action_summary(actions, action_space)
+        print(
+            "dataset: "
+            f"samples={dataset_stats.encoded_samples}, "
+            f"worlds={dataset_stats.worlds_run}, "
+            f"encode_failures={dataset_stats.encode_failures}, "
+            f"invalid_actions={dataset_stats.invalid_encoded_actions}"
+        )
 
         if dataset_stats.encode_failures > 0 or dataset_stats.invalid_encoded_actions > 0:
             raise RuntimeError(
@@ -1054,11 +1008,7 @@ def main() -> None:
             seed=args.seed,
         )
 
-        print("=== Dataset split ===")
-        print(f"train_obs: {train_obs.shape}")
-        print(f"train_actions: {train_actions.shape}")
-        print(f"val_obs: {val_obs.shape}")
-        print(f"val_actions: {val_actions.shape}")
+        print(f"dataset split: train={train_obs.shape[0]}, val={val_obs.shape[0]}")
 
         model, env = make_ppo_model(
             context_name=context_name,
@@ -1090,11 +1040,16 @@ def main() -> None:
                 batch_size=args.batch_size,
             )
 
-            print("=== Best validation metrics ===")
-            print(best_metrics)
-
-            print("=== Final loaded-best imitation metrics ===")
-            print(final_val_metrics)
+            final_val_metrics = _imitation_metrics(
+                model, val_obs, val_actions, args.batch_size
+            )
+            print(
+                "best validation: "
+                f"epoch={best_metrics.get('epoch', float('nan')):.0f}, "
+                f"val_loss={best_metrics.get('val_loss', float('nan')):.3f}, "
+                f"component_acc={best_metrics.get('component_accuracy', float('nan')):.3f}, "
+                f"exact_acc={best_metrics.get('exact_accuracy', float('nan')):.3f}"
+            )
 
             if args.rollout_eval_episodes > 0:
                 print("=== Rollout evaluation: BC model ===")
@@ -1103,14 +1058,12 @@ def main() -> None:
                     context_name=context_name,
                     n_episodes=args.rollout_eval_episodes,
                 )
-                print(bc_rollout)
-
-                print("=== Rollout evaluation: true EqualDistOneShotAgent ===")
                 expert_rollout = evaluate_true_equaldist(
                     context_name=context_name,
                     n_episodes=args.rollout_eval_episodes,
                 )
-                print(expert_rollout)
+                print(f"bc rollout: {bc_rollout}")
+                print(f"expert rollout: {expert_rollout}")
             else:
                 bc_rollout = {
                     "my_score_mean": float("nan"),
@@ -1137,8 +1090,7 @@ def main() -> None:
 
             if not passed and not args.save_even_if_bad:
                 raise RuntimeError(
-                    "Clone quality check failed. Not saving model. "
-                    "Use --save-even-if-bad only for debugging."
+                    "Clone quality check failed; model was not saved."
                 )
 
             save_path = output_dir / f"{MODEL_PATH.name}{context_name}"
