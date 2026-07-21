@@ -192,12 +192,38 @@ if __name__ == "__main__":
         default=None,
         help="Number of world configurations to try (default: runner default).",
     )
+    parser.add_argument(
+        "--year",
+        type=int,
+        default=None,
+        help="Face a specific competition pool (e.g. 2024/2025/2026) instead of "
+        "the default winners set. The 2025/2026 pools need the optional "
+        "scml-agents install (see the README).",
+    )
+    parser.add_argument(
+        "--n-competitors-per-world",
+        type=int,
+        default=None,
+        help="Fix how many competitors share each world. Set this (e.g. 2) with a "
+        "large --year pool, or the round-robin expands into thousands of worlds.",
+    )
+    parser.add_argument(
+        "--serial",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run the tournament serially (default; the parallel tournament "
+        "deadlocks). Pass --no-serial only if you know you need it.",
+    )
     args = parser.parse_args()
 
-    kwargs = {}
+    kwargs = {"serial": args.serial}
     if args.n_steps is not None:
         kwargs["n_steps"] = args.n_steps
     if args.n_configs is not None:
         kwargs["n_configs"] = args.n_configs
+    if args.year is not None:
+        kwargs["year"] = args.year
+    if args.n_competitors_per_world is not None:
+        kwargs["n_competitors_per_world"] = args.n_competitors_per_world
 
     run([MyAgent], **kwargs)
