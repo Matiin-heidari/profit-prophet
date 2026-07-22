@@ -10,6 +10,7 @@ import re
 from multiprocessing import Process, Queue
 from queue import Empty as QueueEmpty
 from typing import Any
+from pathlib import Path
 
 import numpy as np
 from negmas.sao import SAOResponse, ResponseType
@@ -1524,7 +1525,7 @@ def dump_object(obj):
 
 def make_env(context_name, log: bool | None = None) -> OneShotEnv:
     # When `log` is not passed explicitly, fall back to the LOG_WORLD env var
-    # ("1" enables the verbose fail-fast debugging profile; default off).
+    # ("1" enables the verbose fail-fast diagnostic profile; default off).
     if log is None:
         log = os.environ.get("LOG_WORLD", "0") != "0"
 
@@ -1645,20 +1646,12 @@ def train_one(context_name, ntrain, params, queue):
     eval_freq = int(os.environ.get("EVAL_FREQ", str(max(ntrain // 5, 1))))
     n_eval_episodes = int(os.environ.get("N_EVAL_EPISODES", "3"))
     diagnostics_freq = int(os.environ.get("DIAGNOSTICS_FREQ", str(max(ntrain // 20, 1))))
-    # Step-tagged checkpoints (CHECKPOINT_FREQ steps apart; 0 disables).
     checkpoint_freq = int(os.environ.get("CHECKPOINT_FREQ", "100000"))
-    # RESUME=1: continue from the newest _ckpt<steps>.zip toward the SAME
-    # ntrain total (a task requeued after a timeout picks up where it died).
     resume = os.environ.get("RESUME", "0") != "0"
 
-    # Training seed (network init, PPO action sampling, env seeding via SB3).
-    # Set SEED to make a run reproducible and to pair seeds across A/B arms
-    # (e.g. pure-profit SEED=0 vs PBRS SEED=0). Unset = nondeterministic (default).
     seed_str = os.environ.get("SEED")
     seed = int(seed_str) if seed_str not in (None, "") else None
 
-    # Model save path. Seeded runs save to a run-scoped filename so parallel A/B
-    # arms never collide with each other or with the canonical models.
     if seed is not None:
         model_path = (
             MODEL_PATH.parent
@@ -1667,12 +1660,12 @@ def train_one(context_name, ntrain, params, queue):
     else:
         model_path = MODEL_PATH.parent / f"{MODEL_PATH.name}{context_name}"
 
-    # PROGRESS_BARS=0 disables the tqdm bars
     progress_bars = os.environ.get("PROGRESS_BARS", "1") != "0"
 
     callbacks: list[BaseCallback] = [
         TrainingDiagnosticsCallback(log_freq=diagnostics_freq),
     ]
+
     if progress_bars:
         callbacks.insert(0, ProgressCallback(queue, context_name))
 
@@ -1703,20 +1696,33 @@ def train_one(context_name, ntrain, params, queue):
 
         tensorboard_log = f"./{LOG_ROOT}/tensorboard_logs/{run_name}/{context_name}"
 
+        warm_start = os.environ.get("WARM_START", "0") != "0"
+        warm_start_strict = os.environ.get("WARM_START_STRICT", "1") != "0"
+        warm_start_reset_timesteps = (
+            os.environ.get("WARM_START_RESET_TIMESTEPS", "1") != "0"
+        )
+
+        warm_start_model_dir = Path(
+            os.environ.get("WARM_START_MODEL_DIR", str(MODEL_PATH.parent))
+        )
+        warm_start_path = warm_start_model_dir / f"{MODEL_PATH.name}{context_name}"
+        warm_start_zip_path = warm_start_path.with_suffix(".zip")
+        warm_start_loaded = False
+
         checkpoint = _newest_checkpoint(model_path) if resume else None
+
         if checkpoint is not None:
             checkpoint_path, checkpoint_steps = checkpoint
             model = TrainingAlgorithm.load(checkpoint_path, env=env)
             model.tensorboard_log = tensorboard_log
             remaining = max(0, ntrain - model.num_timesteps)
+
             print(
                 f"[resume] {context_name}: loaded {checkpoint_path} "
                 f"({model.num_timesteps} steps done, {remaining} to go)"
             )
+
             if remaining > 0:
-                # reset_num_timesteps=False continues the step counter, so the
-                # target total is num_timesteps + remaining == ntrain and the
-                # TB curves carry on at the right x position.
                 model.learn(
                     total_timesteps=remaining,
                     progress_bar=False,
@@ -1724,40 +1730,60 @@ def train_one(context_name, ntrain, params, queue):
                     tb_log_name=context_name,
                     reset_num_timesteps=False,
                 )
+
         else:
             if resume:
                 print(f"[resume] {context_name}: no checkpoint found, starting fresh")
+
             policy_kwargs = dict(
                 net_arch=[128, 128]
             )
 
-            model = TrainingAlgorithm(
-                "MlpPolicy",
-                env,
-                verbose=0,
-                policy_kwargs=policy_kwargs,
-                seed=seed,
-                tensorboard_log=tensorboard_log,
+            if warm_start and warm_start_zip_path.exists():
+                print(f"Warm starting {context_name} from {warm_start_zip_path}")
+                model = TrainingAlgorithm.load(warm_start_path, env=env)
+                model.tensorboard_log = tensorboard_log
+                warm_start_loaded = True
 
-                ent_coef=0.01,
-                gamma=GAMMA,
-                n_steps=512,
-                batch_size=256
-            ) # type: ignore learning_rate must be passed by the algorithm itself
+            else:
+                if warm_start:
+                    message = (
+                        f"Warm start requested, but model not found for "
+                        f"{context_name}: {warm_start_zip_path}"
+                    )
+
+                    if warm_start_strict:
+                        raise FileNotFoundError(message)
+
+                    print(message)
+                    print("Training from scratch.")
+
+                model = TrainingAlgorithm(
+                    "MlpPolicy",
+                    env,
+                    verbose=0,
+                    policy_kwargs=policy_kwargs,
+                    seed=seed,
+                    tensorboard_log=tensorboard_log,
+                    ent_coef=0.01,
+                    gamma=GAMMA,
+                    n_steps=512,
+                    batch_size=256,
+                )  # type: ignore learning_rate must be passed by the algorithm itself
 
             model.learn(
                 total_timesteps=ntrain,
                 progress_bar=False,
                 callback=callbacks,
                 tb_log_name=context_name,
+                reset_num_timesteps=not (
+                    warm_start_loaded and not warm_start_reset_timesteps
+                ),
             )
 
         model.save(model_path)
 
     finally:
-        # env.close() can itself raise (e.g. BrokenPipe when a worker was
-        # OOM-killed — seen in the 14723915 1M run). The sentinel below MUST
-        # still reach the parent or it waits for this context forever.
         if env is not None:
             try:
                 env.close()
@@ -1820,6 +1846,13 @@ def main(ntrain: int = NTRAINING):
         f"(OPPONENT_POOL={os.environ.get('OPPONENT_POOL', 'default')}; training worlds only)"
     )
 
+    warm_start_enabled = os.environ.get("WARM_START", "0") != "0"
+    print(f"warm_start: {int(warm_start_enabled)}")
+    if warm_start_enabled:
+        print(
+            "warm_start_model_dir: "
+            f"{os.environ.get('WARM_START_MODEL_DIR', str(MODEL_PATH.parent))}"
+        )
     print("=== Resolved reward weights (per context) ===")
     for context_name in CONTEXTS:
         weights = resolve_reward_weights(context_name)
@@ -1886,8 +1919,22 @@ def main(ntrain: int = NTRAINING):
             elif context_name in bars:
                 bars[context_name].update(steps)
 
-        for process in processes:
+        failed_processes = []
+
+        for context_name, process in zip(batch, processes):
             process.join()
+
+            if process.exitcode != 0:
+                failed_processes.append((context_name, process.exitcode))
+
+        if failed_processes:
+            raise RuntimeError(
+                "Training subprocess failed: "
+                + ", ".join(
+                    f"{context_name} exitcode={exitcode}"
+                    for context_name, exitcode in failed_processes
+                )
+            )
 
 
 if __name__ == "__main__":
