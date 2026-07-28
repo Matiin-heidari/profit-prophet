@@ -152,6 +152,9 @@ TRAIN_CONTEXTS=WeakSupplierContext RUN_NAME=experiment1 LOG_REWARD_COMPONENTS=1 
 | `ACTION_MANAGER` | `accept` | Action space for training/eval. `accept`  = `AcceptFlagActionManager`, `flexible` = scml's `FlexibleActionManager` Models trained with different managers are **not** interchangeable; deployment (`MyAgent`) auto-detects the right manager per model from its saved action space. |
 | `OPPONENT_POOL` | `default` | Non-competitor pool for **training** worlds (`myagent/opponents.py`). `default` = scml's Greedy/RandDist/EqualDist trio. `strong` = that trio **plus** the top-2024 qualifiers (Cautious, Suzuka, DistRedist). A comma-separated list of `module.path:ClassName` specs selects exactly those classes. |
 | `SHARD_SEED` | unset | **Benchmark only** (`scripts/benchmark.py` / `slurm/benchmark_shard.sh`). Unset = each shard draws a random world config. `slurm/benchmark_candidates.sh` sets it automatically for the sets it submits. Pairs the config draw only. |
+| `LR_SCHEDULE` | `constant` | PPO learning-rate schedule. `constant` = fixed `LR_INITIAL` for the whole run (reproduces historical runs exactly). `linear` = anneal linearly from `LR_INITIAL` down to `LR_FINAL` over training (`progress_remaining` 1→0, continues correctly across `RESUME`). Only applied on fresh training — a `RESUME`d run keeps the schedule baked into its loaded checkpoint. Untested here yet; a lower late-training LR is the standard mitigation for the late-training regressions already observed (e.g. the 3M continuation, `baseline/1m_steps/README.md`). |
+| `LR_INITIAL` | `3e-4` | Starting learning rate (SB3 PPO's own default). Used for both `constant` and `linear` schedules. |
+| `LR_FINAL` | `0.0` | End-of-training learning rate. Only used when `LR_SCHEDULE=linear`. |
 
 ### Reward shaping weights
 

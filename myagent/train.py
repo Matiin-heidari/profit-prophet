@@ -1636,6 +1636,49 @@ def _newest_checkpoint(base_path) -> tuple[str, int] | None:
     return best
 
 
+def _linear_lr_schedule(initial_value: float, final_value: float = 0.0):
+    """SB3 learning-rate schedule: linear decay from initial_value to final_value.
+
+    SB3 calls the returned function with ``progress_remaining`` going from 1.0
+    (training start) to 0.0 (training end), including across a RESUME (see
+    train_one's resume branch: `remaining = ntrain - model.num_timesteps` is
+    passed as the new `total_timesteps` with `reset_num_timesteps=False`, and
+    SB3's `_setup_learn` adds `num_timesteps` back on internally so
+    `progress_remaining` continues smoothly instead of resetting to 1.0).
+    A plain closure (not a lambda) so it round-trips through SB3's
+    save/load (cloudpickle).
+    """
+    def schedule(progress_remaining: float) -> float:
+        return final_value + progress_remaining * (initial_value - final_value)
+
+    return schedule
+
+
+def resolve_learning_rate() -> float | Any:
+    """Resolve the PPO learning rate from LR_SCHEDULE/LR_INITIAL/LR_FINAL.
+
+    ``LR_SCHEDULE=constant`` (default) reproduces historical runs exactly: a
+    fixed LR_INITIAL (default 3e-4, SB3 PPO's own default) for the whole run.
+    ``LR_SCHEDULE=linear`` anneals from LR_INITIAL down to LR_FINAL (default
+    0.0) over training. Rationale: a constant LR keeps taking large policy
+    steps late in training even as the per-step reward stays noisy, which is
+    a plausible contributor to the late-training regressions already seen
+    here (the 3M continuation regressed to 1.0369 from the 1M set's 1.0572 —
+    see baseline/1m_steps/README.md — and EvaluationCallback's best-model
+    checkpointing exists specifically to guard against this). Decaying LR is
+    the standard mitigation. Opt-in (not the default) since it hasn't been
+    A/B'd here yet — flip LR_SCHEDULE=linear on an HPC run to test it.
+    """
+    kind = os.environ.get("LR_SCHEDULE", "constant").strip().lower()
+    initial = float(os.environ.get("LR_INITIAL", "3e-4"))
+    if kind in ("", "constant"):
+        return initial
+    if kind == "linear":
+        final = float(os.environ.get("LR_FINAL", "0.0"))
+        return _linear_lr_schedule(initial, final)
+    raise ValueError(f"Unknown LR_SCHEDULE={kind!r} (use 'constant' or 'linear')")
+
+
 def train_one(context_name, ntrain, params, queue):
     """Train one model for one context."""
     print(f"Training as {context_name}")
@@ -1739,11 +1782,12 @@ def train_one(context_name, ntrain, params, queue):
                 seed=seed,
                 tensorboard_log=tensorboard_log,
 
+                learning_rate=resolve_learning_rate(),
                 ent_coef=0.01,
                 gamma=GAMMA,
                 n_steps=512,
                 batch_size=256
-            ) # type: ignore learning_rate must be passed by the algorithm itself
+            )
 
             model.learn(
                 total_timesteps=ntrain,
@@ -1813,6 +1857,10 @@ def main(ntrain: int = NTRAINING):
         f"potential_kind: {os.environ.get('REWARD_POTENTIAL_KIND', 'coverage')} "
         f"(only used when potential_weight != 0)"
     )
+    lr_kind = os.environ.get("LR_SCHEDULE", "constant")
+    lr_desc = f"lr_schedule: {lr_kind} (LR_INITIAL={os.environ.get('LR_INITIAL', '3e-4')}"
+    lr_desc += f", LR_FINAL={os.environ.get('LR_FINAL', '0.0')})" if lr_kind == "linear" else ")"
+    print(lr_desc)
     # Resolving here (not just in the workers) fails fast on a bad
     # OPPONENT_POOL before any training process is spawned.
     print(
