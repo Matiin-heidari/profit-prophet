@@ -233,3 +233,25 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated Python files
+__pycache__/
+*.py[cod]
+
+# Training and TensorBoard logs
+tensorboard_logs/
+events.out.tfevents.*
+log/
+logs/
+*.out
+*.err
+
+# Local baseline artifacts
+baseline/
+
+# Environments and editor files
+.venv/
+venv/
+.env
+.vscode/
+.idea/
