@@ -8,7 +8,7 @@
 #SBATCH --partition=kisski
 #SBATCH --array=0-2
 
-# PBRS day-profit A/B arm (§9.7 item 5): pure-profit + potential-based shaping
+# PBRS day-profit A/B arm: pure-profit + potential-based shaping
 # with Φ = realized day profit (REWARD_POTENTIAL_KIND=dayprofit). Policy-
 # invariant by construction; the A/B tests whether densifying the ALIGNED
 # per-deal credit speeds learning where Φ=coverage (which densified the

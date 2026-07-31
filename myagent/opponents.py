@@ -4,7 +4,7 @@ The training/eval contexts fill non-agent world slots from
 ``GeneralContext.non_competitors``, which defaults to the weak
 ``DefaultAgentsOneShot`` trio (Greedy, RandDist, EqualDist) — a saturated
 pool where near-random agents already score ~0.9, while the qualifier
-benchmark judges us against much stronger agents (§10 item 7 in CLAUDE.md).
+benchmark judges us against much stronger agents
 ``OPPONENT_POOL=strong`` mixes the top 2024 qualifiers into the pool so the
 training distribution matches what the benchmark measures.
 
@@ -50,23 +50,13 @@ _cache: dict[str, tuple | None] = {}
 
 
 def _reseed_from_os_entropy() -> None:
-    """Undo scml_agents' import-time RNG pollution.
-
-    scml_agents runs a module-level ``random.seed(0)`` on import (scml2022
-    oneshot team_131 — see CLAUDE.md §5). In training this import happens in
-    EVERY SubprocVecEnv worker, so without this reseed all workers would draw
-    near-identical world sequences. Same workaround as scripts/benchmark.py
-    and myagent/myagent.py.
-    """
+    """Undo scml_agents' import-time RNG pollution."""
     random.seed()
     np.random.seed()
 
 
 def _load_strong_agents() -> tuple:
     """Import the curated strong qualifiers from the installed scml_agents."""
-    # Tournaments/training fork workers; a torch-based opponent touching CUDA
-    # in a forked child dies (§5). The curated agents are torch-free, but keep
-    # the guard in case the list changes.
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
     try:
         from scml_agents import get_agents

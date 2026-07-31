@@ -27,24 +27,7 @@ __all__ = ["AcceptFlagActionManager", "make_action_manager"]
 
 
 class AcceptFlagActionManager(FlexibleActionManager):
-    """`FlexibleActionManager` plus an explicit per-partner ACCEPT value.
-
-    The base manager only emits ACCEPT when the decoded offer happens to
-    *exactly equal* the partner's current offer (quantity AND price bin).
-    This manager reserves one extra value at the top of each partner's
-    quantity dimension:
-
-    - ``q <= max_quantity``    → exactly the base manager's semantics.
-    - ``q == max_quantity + 1`` → "close with this partner": ACCEPT their
-      current offer if one exists, otherwise END the negotiation (there is
-      nothing to accept in a first-proposal round; the flag consistently
-      means "I am done negotiating with you").
-
-    The price half of a flagged slot is ignored (the accepted offer is the
-    partner's, verbatim). Grouped slots (more real partners than action
-    slots) accept every member's current offer. Only discrete action spaces
-    are supported.
-    """
+    """`FlexibleActionManager` plus an explicit per-partner ACCEPT value."""
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()

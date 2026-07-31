@@ -77,7 +77,7 @@ def make_context(context_name: str, non_competitors=None) -> GeneralContext:
         case "WeakConsumerContext":
             return WeakConsumerContext(**kwargs)
         case _:
-            return GeneralContext(**kwargs)
+            return GeneralContext(**kwargs)  # pyright: ignore[reportArgumentType]
 
 
 def get_parallelization_params(n_models_parallel: int = 1) -> dict:

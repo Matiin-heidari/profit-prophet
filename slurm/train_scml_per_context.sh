@@ -43,8 +43,8 @@ export N_EVAL_EPISODES="${N_EVAL_EPISODES:-10}"
 STEPS="${STEPS:-400000}"
 
 # --- REWARD: PURE-PROFIT (current best; matches train_scml.sh) --------------
-# score_delta only; all hand-shaping off (see CLAUDE.md §4). Overrides the
-# per-context default weight table.
+# score_delta only; all hand-shaping off. Overrides the per-context default
+# weight table.
 export REWARD_SCORE_DELTA_WEIGHT=100.0
 export REWARD_NEED_WEIGHT=0.0
 export REWARD_SHORTFALL_WEIGHT=0.0

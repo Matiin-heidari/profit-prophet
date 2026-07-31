@@ -17,11 +17,9 @@ from negmas.sao import SAOResponse, ResponseType
 from rich import print
 from scml.oneshot.awi import OneShotAWI
 from scml.oneshot.context import GeneralContext
-from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.agent import OneShotRLAgent
 from scml.oneshot.rl.common import model_wrapper
 from scml.oneshot.rl.env import OneShotEnv
-from scml.oneshot.rl.observation import FlexibleObservationManager
 from scml.oneshot.rl.reward import RewardFunction
 
 from tqdm import tqdm
@@ -40,7 +38,7 @@ from .common import (
     make_context,
 )
 
-NTRAINING = 300000  # number of training steps. Can alse be passed as an argument.
+NTRAINING = 300000  # number of training steps. Can also be passed as an argument.
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -103,26 +101,6 @@ def _mean_numeric(values: list[Any], default: float = 0.0) -> float:
 
     return float(np.mean(numeric_values))
 
-
-def _safe_numeric_summary(value: Any, default: float = 0.0) -> float:
-    """Summarize scalar/list/array values as a mean."""
-    values = _numeric_values(value)
-
-    if not values:
-        return default
-
-    return float(np.mean(values))
-
-
-def _extract_world_stat(world: Any, key: str) -> float | None:
-    """Read optional world statistics."""
-    for attr_name in ("stats", "statistics"):
-        stats = getattr(world, attr_name, None)
-
-        if isinstance(stats, dict) and key in stats:
-            return _safe_numeric_summary(stats[key])
-
-    return None
 
 
 def _metric_safe_name(name: str) -> str:
@@ -216,10 +194,7 @@ def evaluate_model(
 
     If ``seed`` is given, the world generation and opponent randomness are made
     reproducible by seeding the global RNG, so the same eval world is used at
-    every evaluation point during training- This gives a comparable learning curve
-    instead of one dominated by world-draw noise. The RNG state is saved and
-    restored around the seeded section so the training process's own randomness
-    stream is left untouched.
+    every evaluation point during training.
     """
     context = make_context(context_name)
 
@@ -363,8 +338,6 @@ def evaluate_model(
     return metrics
 
 
-_UNIT_PRICE_IDX = 2
-
 def _catalog_prices(awi: OneShotAWI) -> tuple[float, float]:
     """Return (input_catalog_price, output_catalog_price) for this agent.
 
@@ -376,41 +349,6 @@ def _catalog_prices(awi: OneShotAWI) -> tuple[float, float]:
         return float(prices[level]), float(prices[level + 1])
     except Exception:
         return 1.0, 1.0
-    
-def _trading_prices(awi: OneShotAWI) -> tuple[float, float]:
-    try:
-        prices = awi.trading_prices
-        return float(prices[awi.my_input_product]), float(prices[awi.my_output_product])
-    except Exception:
-        return _catalog_prices(awi)
-    
-def _sell_agreement_prices(awi: OneShotAWI) -> list[tuple[float, int]]:
-    """(unit_price, quantity) pairs from sell negotiations that closed with an agreement this step."""
-    try:
-        return [
-            (float(state.agreement[_UNIT_PRICE_IDX]), int(state.agreement[0]))
-            for state in awi.current_sell_states.values()
-            if state.agreement is not None
-        ]
-    except Exception:
-        return []
-
-
-def _buy_agreement_prices(awi: OneShotAWI) -> list[tuple[float, int]]:
-    """(unit_price, quantity) pairs from buy negotiations that closed with an agreement this step.
-
-    NOTE: superseded by ``_diff_deals``. ``current_buy_states`` only lists
-    *running* negotiations, where ``agreement`` is never populated (concluded
-    deals leave that set), so this reads empty in practice. Kept for reference.
-    """
-    try:
-        return [
-            (float(state.agreement[_UNIT_PRICE_IDX]), int(state.agreement[0]))
-            for state in awi.current_buy_states.values()
-            if state.agreement is not None
-        ]
-    except Exception:
-        return []
 
 
 def _diff_deals(
@@ -420,10 +358,7 @@ def _diff_deals(
 
     Reads per-partner secured quantity and total price (``awi.sales`` /
     ``awi.sales_cost`` for selling, ``awi.supplies`` / ``awi.supplies_cost`` for
-    buying) and returns only *positive* increments. This is robust across day
-    boundaries: a new day's counters start fresh and only grow, so positive
-    deltas always correspond to genuinely new deals. This is the reward-time-valid
-    way to observe closed deals (``current_*_states`` cannot — see above).
+    buying) and returns only *positive* increments.
     """
     deals: list[tuple[float, int]] = []
     try:
@@ -436,28 +371,6 @@ def _diff_deals(
     except Exception:
         return []
     return deals
-
-
-def _shortfall_sell_ratio(awi: OneShotAWI) -> float:
-    """Fraction of required sales not yet covered, in [0, 1]."""
-    try:
-        required = float(getattr(awi, "current_exogenous_input_quantity", 0) or 0)
-        needed = float(getattr(awi, "needed_sales", 0) or 0)
-        return float(np.clip(needed / max(required, 1.0), 0.0, 1.0))
-    except Exception:
-        return 0.0
-
-
-def _shortfall_buy_ratio(awi: OneShotAWI) -> float:
-    """Fraction of required supplies not yet secured, in [0, 1]."""
-    try:
-        required = float(getattr(awi, "current_exogenous_output_quantity", 0) or 0)
-        needed = float(getattr(awi, "needed_supplies", 0) or 0)
-        return float(np.clip(needed / max(required, 1.0), 0.0, 1.0))
-    except Exception:
-        return 0.0
-
-
 
 class ProgressCallback(BaseCallback):
     """Send training progress to the main process."""
@@ -476,16 +389,7 @@ class ProgressCallback(BaseCallback):
 
 
 class CheckpointCallback(BaseCallback):
-    """Save step-tagged model checkpoints during training.
-
-    Long runs (1–3M steps ≈ several hours) must survive wall-clock timeouts
-    and crashes: `train_one` can resume from the newest checkpoint (RESUME=1).
-    Step-tagged files also keep intermediate policies comparable — e.g. the
-    400k checkpoint of a 3M run lines up with the 400k-step baseline
-    (`baseline/400k_steps/`). Files: ``<base>_ckpt<steps>.zip`` (they never
-    match MyAgent's canonical ``mymodel<Context>.zip`` pattern, so deployment
-    and the benchmark's model-count check are unaffected).
-    """
+    """Save step-tagged model checkpoints during training."""
 
     def __init__(self, base_path, save_freq: int):
         super().__init__()
@@ -517,9 +421,7 @@ class EvaluationCallback(BaseCallback):
     ``score`` over the fixed eval worlds sets a new record, with a sidecar
     ``<best_path>_meta.json`` recording the score/step. The sidecar is read
     back on construction so a resumed run keeps the historical record instead
-    of overwriting the best model with a worse one. This protects against
-    late-training decline (observed: FLEX StrongSupplier, §4/CLAUDE.md).
-    """
+    of overwriting the best model with a worse one."""
 
     # Headline metrics surfaced in their own dashboard category. The "0_" prefix
     # sorts this group to the top in TensorBoard (categories are ordered
@@ -822,21 +724,6 @@ class TrainingDiagnosticsCallback(BaseCallback):
 # Per-context default shaping weights. Keyed by context class name.
 # A matching REWARD_* environment variable always overrides the value here,
 # so sweeps that set the env vars explicitly are unaffected;
-# Profit-aligned defaults: `margin_weight` is the primary dense signal (rewards
-# realized per-deal profit margin), with a small `need_weight` floor so the agent
-# still trades enough to avoid shortfall/disposal even when margins are thin.
-# `need_weight` is a context-specific floor: higher where shortfall/disposal risk
-# is higher. Strong positions have pricing leverage and sell/buy easily, so margin
-# leads; Weak positions face scarce demand/supply, so coverage matters more (a
-# thin- or negative-margin deal can still beat a worse shortfall/disposal cost).
-"""_CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
-    "StrongSupplierContext": {"margin_weight": 0.30, "need_weight": 0.02},
-    "StrongConsumerContext": {"margin_weight": 0.30, "need_weight": 0.02},
-    "BalancedSupplierContext": {"margin_weight": 0.30, "need_weight": 0.05},
-    "BalancedConsumerContext": {"margin_weight": 0.30, "need_weight": 0.05},
-    "WeakSupplierContext": {"margin_weight": 0.30, "need_weight": 0.10},
-    "WeakConsumerContext": {"margin_weight": 0.30, "need_weight": 0.10},
-}"""
 _CONTEXT_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {}
 
 # Discount used by both PPO and PBRS. They need to be identical.
@@ -904,12 +791,7 @@ class MyRewardFunction(RewardFunction):
         self.engagement_weight = weights["engagement_weight"]
         self.margin_weight = weights["margin_weight"]
         self.potential_weight = weights["potential_weight"]
-        # Which potential Φ the PBRS term uses (only matters when
-        # potential_weight != 0): "coverage" (legacy — densifies the
-        # price-blind coverage signal; lost its multi-seed A/B) or
-        # "dayprofit" (realized profit of the current day — densifies the
-        # aligned profit signal). Kept an env var, not a weight, because the
-        # two Φs are alternatives, not composable terms.
+        # Which potential Φ the PBRS term uses (only matters when potential_weight != 0)
         self.potential_kind = (
             os.environ.get("REWARD_POTENTIAL_KIND", "coverage").strip().lower()
         )
@@ -936,15 +818,7 @@ class MyRewardFunction(RewardFunction):
         atexit.register(self._close_reward_log)
 
     def _potential(self, awi: OneShotAWI) -> float:
-        """Potential Φ(s) for potential-based reward shaping (PBRS).
-
-        Used only as ``γ·Φ(s') − Φ(s)``, which — by Ng, Harada & Russell
-        (1999) — leaves the optimal policy unchanged while densifying the
-        sparse profit reward. So this shaping can speed learning but provably
-        cannot steer the agent to a worse policy, unlike the ad-hoc
-        need/margin terms. The Φ body is selected by REWARD_POTENTIAL_KIND
-        (see __init__); both are pure functions of the current state.
-        """
+        """Potential Φ(s) for potential-based reward shaping (PBRS)."""
         if self.potential_weight == 0.0:
             return 0.0
         if self.potential_kind == "dayprofit":
@@ -952,24 +826,7 @@ class MyRewardFunction(RewardFunction):
         return self._potential_coverage(awi)
 
     def _potential_dayprofit(self, awi: OneShotAWI) -> float:
-        """Φ = realized profit of the current day so far (normalized).
-
-        Reads the ABSOLUTE per-partner counters (``awi.sales``/``sales_cost``
-        for suppliers, ``supplies``/``supplies_cost`` for consumers — state,
-        not history; no ``_diff_deals`` diffing here, Φ must be a function of
-        s alone) and values them against the same break-even convention as
-        ``margin_bonus``: supplier profit = revenue − (catalog_in + prod_cost)
-        × qty; consumer profit = (catalog_out − prod_cost) × qty − spend.
-
-        Why this Φ where Φ=coverage failed: score_delta lands once at day end,
-        so PBRS with a day-profit potential hands out per-deal credit WITHIN
-        the day; the counters reset at the day boundary, so Φ drops back to ~0
-        exactly when score_delta pays out — that drop is the telescoping term,
-        not a bug. Coverage instead densified the misaligned price-blind
-        signal. Normalized by price × capacity so magnitudes are comparable
-        across worlds, and clipped as a guard against degenerate worlds
-        (clipping keeps Φ a state function, so policy invariance holds).
-        """
+        """Φ = realized profit of the current day so far (normalized)."""
         try:
             is_consumer = "Consumer" in type(self.context).__name__
             catalog_in, catalog_out = _catalog_prices(awi)
@@ -999,9 +856,7 @@ class MyRewardFunction(RewardFunction):
     def _potential_coverage(self, awi: OneShotAWI) -> float:
         """Φ = coverage ∈ [0, 1]: fraction of the *active need* already
         secured (1 = fully covered). Higher Φ = less expected
-        shortfall/disposal. ⚠️ Lost its multi-seed A/B vs pure-profit (it
-        densifies the price-blind coverage signal) — kept for reproducibility
-        of the historical arms; prefer ``dayprofit``.
+        shortfall/disposal.
         """
         try:
             needed_sales = _safe_float(getattr(awi, "needed_sales", 0.0))
@@ -1623,7 +1478,7 @@ def try_a_trained_model(context_name: str):
 
     return world
 
-    
+
 def _newest_checkpoint(base_path) -> tuple[str, int] | None:
     """Return (path, steps) of the highest-step checkpoint for a model base."""
     best: tuple[str, int] | None = None
@@ -1799,7 +1654,7 @@ def test_train(context_name):
     print(type(world))
     for agent_id, agent in world.agents.items():
         print(agent_id, type(agent).__name__)
-    
+
 
 def main(ntrain: int = NTRAINING):
     """Train models for selected contexts."""
@@ -1885,12 +1740,6 @@ def main(ntrain: int = NTRAINING):
         for process in processes:
             process.start()
 
-        # Wait for one sentinel per child — but never trust that every child
-        # CAN send one: a process SIGKILLed by the cgroup OOM killer (1M run
-        # 14723915: 6-7 oom_kills per task) dies without running its finally,
-        # and a plain queue.get() then blocks until the wall-time limit,
-        # burning hours after all children are dead. Poll with a timeout and
-        # reap silently-dead children so the batch always terminates.
         waiting = dict(zip(batch, processes))
 
         while waiting:

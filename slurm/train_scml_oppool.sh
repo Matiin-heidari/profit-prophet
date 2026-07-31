@@ -8,18 +8,18 @@
 #SBATCH --partition=kisski
 #SBATCH --array=0-2
 
-# Strong-opponent-pool A/B arm (§9.7 item 4): OPPONENT_POOL=strong mixes the
-# top-2024 qualifiers (Cautious, Suzuka, DistRedist — see myagent/opponents.py)
-# into the TRAINING worlds' non-competitor slots, so the training distribution
+# Strong-opponent-pool A/B arm: OPPONENT_POOL=strong mixes the top-2024
+# qualifiers (Cautious, Suzuka, DistRedist — see myagent/opponents.py) into
+# the TRAINING worlds' non-competitor slots, so the training distribution
 # matches what the qualifier benchmark measures. Eval worlds keep the default
 # pool (comparable 0_key/* curves); deployment is untouched.
 #
 #   sbatch slurm/train_scml_oppool.sh
 #
 # BASELINE ARM = the completed accept_s{0,1,2} runs (identical protocol; ONLY
-# OPPONENT_POOL differs). This item is FOR transfer: the paired qualifier
-# benchmark (SHARD_SEED, §9.7 item 6) is the primary judge — the saturated
-# default-pool eval may legitimately not move.
+# OPPONENT_POOL differs). This item is FOR transfer: a paired qualifier
+# benchmark (same SHARD_SEED across both model sets) is the primary judge —
+# the saturated default-pool eval may legitimately not move.
 #
 # Wall time: local smoke probe (3000 random steps, BalancedSupplier) measured
 # ~parity between pools (122 steps/s strong vs 106 default — the curated
