@@ -1,6 +1,10 @@
 # ProfitProphets
 
-ProfitProphets is a group project developing an autonomous agent for the **Supply Chain Management League (SCML)**.
+ProfitProphets is a group project developing an autonomous agent for the **Supply Chain Management League (SCML)**. 
+
+For our submission we decided on a reinforcement learning approach: our agent learns the negotiation policy end-to-end with PPO. Concession, acceptance, and quantity-splitting behavior emerges from experience rather than from hand-written rules.
+
+Instead of asking one generalist to adapt to every situation, we train a mixture of six specialists and route between them at runtime based on observable market conditions. Training happens in two stages. In pre-training, a single model learns general negotiation behavior. In fine-tuning, each context specific model is specialized into the six context, each learning the behavior its market position calls for.
 
 ## Requirements
 
