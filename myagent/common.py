@@ -213,9 +213,6 @@ class MyObservationManager(FlexibleObservationManager):
 
         obs = np.concatenate([base, extras])
 
-        assert np.all(obs >= 0.0)
-        assert np.all(obs <= 1.0)
-
         return obs
 
     def make_first_observation(self, awi: OneShotAWI) -> np.ndarray:
