@@ -68,17 +68,3 @@ To develop your agent, the only required steps are the following:
    This is the only file you need to submit.
 
 _Submissions start on March 15th 2021 at <https://scml.cs.brown.edu>_
-
-## Agent Information
-
-Fill this section with your agent information
-
-- Agent Name: my-agent-name
-- Team Name: my-team-name
-- Contact Email: <my-email@some-server.xyz>
-- Affiliation: Institute, Department
-- Country: country-name
-- Team Members:
-  1. First Name <first.email@institute.xyz>
-  1. Second Name <first.email@institute.xyz>
-  1. ...

@@ -1,7 +1,9 @@
 """
 **Submitted to ANAC 2024 SCML (OneShot track)**
-*Team* type your team name here
-*Authors* type your team member names with their emails here
+*Profit-Prophet*
+*Toby Sang*
+*Matin Heidari Khayat*
+*Konstantin Hutmacher*
 
 This code is free to use or update given that proper attribution is given to
 the authors and the ANAC 2024 SCML competition.
