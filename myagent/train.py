@@ -35,11 +35,12 @@ from .common import (
     CONTEXTS,
     MyObservationManager,
     TrainingAlgorithm,
+    get_lr_schedule,
     get_parallelization_params,
     make_context,
 )
 
-NTRAINING = 300000  # number of training steps. Can alse be passed as an argument.
+NTRAINING = 300000  # number of training steps
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1781,8 +1782,7 @@ def train_one(context_name, ntrain, params, queue):
                 policy_kwargs=policy_kwargs,
                 seed=seed,
                 tensorboard_log=tensorboard_log,
-
-                learning_rate=resolve_learning_rate(),
+                learning_rate=get_lr_schedule(),
                 ent_coef=0.01,
                 gamma=GAMMA,
                 n_steps=512,
@@ -1842,6 +1842,11 @@ def main(ntrain: int = NTRAINING):
     print(f"contexts: {CONTEXTS}")
     print(f"run_name: {os.environ.get('RUN_NAME', 'default')}")
     print(f"seed: {os.environ.get('SEED', 'None (nondeterministic)')}")
+    print(
+        f"lr_schedule: {os.environ.get('LR_SCHEDULE', 'linear')} "
+        f"(initial={os.environ.get('LR_INITIAL', '3e-4')}, "
+        f"final={os.environ.get('LR_FINAL', '1e-5')})"
+    )
     print(f"diagnostics_freq: {os.environ.get('DIAGNOSTICS_FREQ', f'{max(ntrain // 20, 1)}')}")
     print(f"checkpoint_freq: {os.environ.get('CHECKPOINT_FREQ', '100000')}")
     print(f"resume: {os.environ.get('RESUME', '0')}")

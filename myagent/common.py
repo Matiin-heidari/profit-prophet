@@ -1,6 +1,7 @@
 # exports the name of the training algorithm
 import os
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from gymnasium import spaces
@@ -19,7 +20,7 @@ from scml.oneshot.context import (
 from stable_baselines3 import A2C, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 
-TrainingAlgorithm: type[PPO] = PPO
+TrainingAlgorithm: type[BaseAlgorithm] = PPO
 """The algorithm used for training. You can use any stable_baselines3 algorithm or develop your own"""
 
 _model_dir = os.environ.get("MODEL_DIR", "").strip()
@@ -30,6 +31,58 @@ MODEL_PATH = (
 
 The MODEL_DIR env var overrides the directory (resolved from the CWD if
 relative). Unset = the canonical myagent/models"""
+
+
+def linear_schedule(initial_value: float, final_value: float = 0.0):
+    """Linear decay from ``initial_value`` to ``final_value`` over training.
+
+    SB3 calls the returned callable with ``progress_remaining``, which goes
+    from 1.0 (start) to 0.0 (end of training).
+    """
+    def schedule(progress_remaining: float) -> float:
+        return final_value + (initial_value - final_value) * progress_remaining
+
+    return schedule
+
+
+def cosine_schedule(initial_value: float, final_value: float = 0.0):
+    """Cosine decay from ``initial_value`` to ``final_value`` over training.
+
+    Decays slowly at first and last, faster in the middle - often converges
+    better than a linear ramp because it holds a high LR a bit longer before
+    dropping.
+    """
+    def schedule(progress_remaining: float) -> float:
+        progress = 1.0 - progress_remaining
+        cosine_decay = 0.5 * (1.0 + np.cos(np.pi * progress))
+        return final_value + (initial_value - final_value) * cosine_decay
+
+    return schedule
+
+
+def get_lr_schedule() -> float | Callable[[float], float]:
+    """Resolve the PPO learning-rate schedule from env vars.
+
+    - ``LR_INITIAL``: starting learning rate (default ``3e-4``, SB3's PPO default).
+    - ``LR_FINAL``: learning rate at the end of training (default ``1e-5``).
+    - ``LR_SCHEDULE``: ``linear`` (default), ``cosine``, or ``constant``.
+
+    Starting high and decaying lets the agent explore broadly early on, then
+    take smaller, more stable update steps as it converges - so training
+    doesn't overshoot a good policy once it's close to one.
+    """
+    initial = float(os.environ.get("LR_INITIAL", "3e-4"))
+    final = float(os.environ.get("LR_FINAL", "1e-5"))
+    schedule_type = os.environ.get("LR_SCHEDULE", "linear").lower()
+
+    if schedule_type == "constant":
+        return initial
+    if schedule_type == "cosine":
+        return cosine_schedule(initial, final)
+    return linear_schedule(initial, final)
+
+MODEL_PATH = Path(__file__).parent / "models" / "mymodel"
+"""The path in which train.py saves the trained model and from which myagent.py loads it."""
 
 LOG_ROOT = "log"
 """Parent directory (relative to the run's CWD) for all log subfolders:
